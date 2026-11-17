@@ -1,0 +1,40 @@
+/* DeepSeek 网页增强 —— 仅补充我们自己插入的公式容器样式，其余沿用页面自带的 KaTeX CSS */
+
+.dsv-math {
+  font-size: 1.02em;
+}
+
+.dsv-math-inline {
+  display: inline;
+  white-space: nowrap;
+}
+
+.dsv-math-display {
+  display: block;
+  margin: 16px 0;
+  padding: 4px 2px;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+/* KaTeX 自带的 .katex-display 在这里已经有外层容器，去掉它自己的外边距避免双重间距 */
+.dsv-math-display > .katex-display {
+  margin: 0;
+}
+
+.dsv-math-display:first-child {
+  margin-top: 0;
+}
+
+.dsv-math-display:last-child {
+  margin-bottom: 0;
+}
+
+/* 复制的公式在选中时给一点反馈，方便确认“整个公式都被选中了” */
+.dsv-math.katex-copy-hint {
+  outline: 2px solid rgba(77, 107, 254, 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

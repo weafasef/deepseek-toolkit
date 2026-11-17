@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepSeek 网页增强</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="panel">
+    <header class="header">
+      <div class="header-main">
+        <div class="title-wrap">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="title">DeepSeek 网页增强</span>
+        </div>
+        <span class="version">v1.0</span>
+      </div>
+      <div class="stat-bar" id="statBar">正在读取当前页面…</div>
+    </header>
+
+    <section class="card">
+      <div class="section-title">🧠 思维链</div>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">默认收起</span>
+          <span class="rule-desc">打开页面时，已完成思考的块自动折叠</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="collapseDefault" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">生成完成自动收起</span>
+          <span class="rule-desc">思考结束、正文开始时自动折叠</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="autoCollapseOnDone" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">记住每条展开状态</span>
+          <span class="rule-desc">你手动展开过的，刷新后仍然展开</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="rememberState" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="collapseAllBtn">全部折叠</button>
+        <button class="btn btn-outline" id="expandAllBtn">全部展开</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">∑ LaTeX 公式</div>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">渲染 \[...\] 与 \(...\)</span>
+          <span class="rule-desc">把 DeepSeek 当成普通文字显示的公式重新渲染</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="latexConvert" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">复制公式得 LaTeX 源码</span>
+          <span class="rule-desc">选中公式任意片段，复制出完整源码</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="latexCopy" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row sub-row">
+        <div class="rule-info">
+          <span class="rule-name">复制时带 $ 定界符</span>
+          <span class="rule-desc">行内 $…$，块级 $$…$$</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="copyWithDelimiters" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+    </section>
+
+    <footer class="footer">仅在 chat.deepseek.com 的对话页生效</footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
