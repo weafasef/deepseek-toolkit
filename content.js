@@ -20,6 +20,8 @@
   let wasGenerating = new WeakSet();     // 曾处于“正在思考”的块
   const clickLock = new WeakMap();       // 防止连续点击同一块
   let syntheticClick = false;
+  let lastScrollAt = 0;
+  let scrollIdleTimer = 0;
 
   const HAVE_KATEX = typeof katex !== "undefined" && katex && typeof katex.renderToString === "function";
 
@@ -36,7 +38,7 @@
   chrome.storage.local.get(["dsToolkitSettings", "dsToolkitThinkState"], (res) => {
     settings = { ...DEFAULTS, ...(res?.dsToolkitSettings || {}) };
     storedThinkState = (res?.dsToolkitThinkState || {}) || {};
-    boot();
+    queueMicrotask(boot);
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -98,7 +100,7 @@
       if (!header) continue;
       const title = blockTitle(header);
       if (!isThinkTitle(title)) continue;
-      out.push({ container, header, title });
+      out.push({ container, header, title, key: blockKey(container, title) });
     }
     return out;
   }
@@ -107,14 +109,26 @@
     return Boolean(container.querySelector(".ds-think-content"));
   }
 
-  function stateKey(index, title) {
-    const session = location.pathname || "/";
-    return `${session}#${index}#${title.replace(/\s+/g, "")}`;
+  /* 用虚拟列表给每条消息的稳定 key 当状态标识，不再用“第几个” */
+  const syntheticIds = new WeakMap();
+  let syntheticSeq = 0;
+
+  function containerId(container) {
+    const item = container.closest("[data-virtual-list-item-key]");
+    const attr = item && item.getAttribute("data-virtual-list-item-key");
+    if (attr) return `m${attr}`;
+    if (!syntheticIds.has(container)) syntheticIds.set(container, `s${syntheticSeq++}`);
+    return syntheticIds.get(container);
   }
 
-  function rememberBlock(index, title, open) {
+  function blockKey(container, title) {
+    const session = location.pathname || "/";
+    return `${session}|${containerId(container)}|${title.replace(/\s+/g, "")}`;
+  }
+
+  function rememberBlock(key, open) {
     if (!settings.rememberState) return;
-    storedThinkState[stateKey(index, title)] = open ? "open" : "closed";
+    storedThinkState[key] = open ? "open" : "closed";
     const keys = Object.keys(storedThinkState);
     if (keys.length > 400) {
       for (const k of keys.slice(0, keys.length - 400)) delete storedThinkState[k];
@@ -122,7 +136,7 @@
     saveThinkState();
   }
 
-  function setBlockOpen(block, index, wantOpen, { record = false } = {}) {
+  function setBlockOpen(block, wantOpen, { record = false } = {}) {
     const open = isOpenBlock(block.container);
     if (open === wantOpen) return false;
     const last = clickLock.get(block.container) || 0;
@@ -135,43 +149,97 @@
       // ignore
     }
     syntheticClick = false;
-    if (record) rememberBlock(index, block.title, wantOpen);
+    if (record) rememberBlock(block.key, wantOpen);
     return true;
   }
 
-  let thinkScheduled = false;
-  function scheduleThink(delay = 250) {
-    if (thinkScheduled) return;
-    thinkScheduled = true;
-    setTimeout(() => {
-      thinkScheduled = false;
+  /* ---------------- 滚动守卫 ---------------- */
+  /* 滚动中以及停下后的短时间内，不改任何高度：虚拟列表正在测量，改了就会跳 */
+
+  function isScrolling() {
+    return Date.now() - lastScrollAt < 450;
+  }
+
+  function onScrollActivity() {
+    lastScrollAt = Date.now();
+    clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = setTimeout(() => {
       syncThink();
-    }, delay);
+      scheduleScan(0);
+    }, 520);
+  }
+
+  window.addEventListener("scroll", onScrollActivity, true);
+  window.addEventListener("wheel", onScrollActivity, { passive: true, capture: true });
+  window.addEventListener("touchmove", onScrollActivity, { passive: true, capture: true });
+
+  /* ---------------- 视口判断 ---------------- */
+
+  function scrollParentOf(el) {
+    let p = el && el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      const style = getComputedStyle(p);
+      if (/(auto|scroll)/.test(style.overflowY) && p.scrollHeight > p.clientHeight + 20) return p;
+      p = p.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function isNearBottom(el) {
+    const scroller = scrollParentOf(el);
+    if (!scroller) return true;
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160;
+  }
+
+  function isBelowViewport(el) {
+    return el.getBoundingClientRect().top > window.innerHeight + 40;
+  }
+
+  /* 停在底部时可以改上面的高度；否则只动视口下方的块 */
+  function mayAdjust(block, nearBottom) {
+    if (nearBottom) return true;
+    return isBelowViewport(block.container);
+  }
+
+  let thinkQueued = false;
+  function scheduleThink() {
+    if (thinkQueued) return;
+    thinkQueued = true;
+    // 微任务里执行：赶在浏览器绘制之前，避免“先展开再收起”的闪烁
+    queueMicrotask(() => {
+      thinkQueued = false;
+      syncThink();
+    });
   }
 
   function syncThink() {
     if (!settings.collapseDefault && !settings.autoCollapseOnDone && !settings.rememberState) return;
-    const blocks = thinkBlocks();
+    if (isScrolling()) return;
 
-    blocks.forEach((block, index) => {
+    const blocks = thinkBlocks();
+    if (!blocks.length) return;
+    const nearBottom = isNearBottom(blocks[0].container);
+
+    for (const block of blocks) {
       const generating = isGeneratingTitle(block.title);
       if (generating) {
         wasGenerating.add(block.container);
-        return;
+        continue;
       }
-      if (!isFinishedTitle(block.title)) return;
-      if (userTouched.has(block.container)) return;
+      if (!isFinishedTitle(block.title)) continue;
+      if (userTouched.has(block.container)) continue;
+      if (!mayAdjust(block, nearBottom)) continue;
 
       const open = isOpenBlock(block.container);
-      const stored = settings.rememberState ? storedThinkState[stateKey(index, block.title)] : undefined;
+      const stored = settings.rememberState ? storedThinkState[block.key] : undefined;
 
       if (stored === "open") {
-        if (!open) setBlockOpen(block, index, true);
-        return;
+        if (!open) setBlockOpen(block, true);
+        continue;
       }
       if (stored === "closed") {
-        if (open) setBlockOpen(block, index, false);
-        return;
+        if (open) setBlockOpen(block, false);
+        continue;
       }
 
       // “默认收起”负责历史消息；“生成完成自动收起”负责本轮亲眼看着它从思考变成完成的块
@@ -180,20 +248,20 @@
         (settings.collapseDefault && !seenGenerating) ||
         (settings.autoCollapseOnDone && seenGenerating);
       if (shouldCollapse && open) {
-        setBlockOpen(block, index, false);
+        setBlockOpen(block, false);
       }
-    });
+    }
   }
 
   function setAllThink(open) {
     const blocks = thinkBlocks();
-    blocks.forEach((block, index) => {
+    for (const block of blocks) {
       userTouched.add(block.container);
       if (isOpenBlock(block.container) !== open) {
-        setBlockOpen(block, index, open);
+        setBlockOpen(block, open);
       }
-      rememberBlock(index, block.title, open);
-    });
+      rememberBlock(block.key, open);
+    }
     return blocks.length;
   }
 
@@ -210,10 +278,9 @@
       if (!isThinkTitle(title)) return;
 
       userTouched.add(container);
-      const index = thinkBlocks().findIndex((b) => b.container === container);
       setTimeout(() => {
         const open = isOpenBlock(container);
-        if (index >= 0) rememberBlock(index, title, open);
+        rememberBlock(blockKey(container, blockTitle(header) || title), open);
       }, 120);
     },
     true
@@ -346,6 +413,14 @@
     return t.trim();
   }
 
+  // 去掉花括号内容和 LaTeX 命令后，如果还剩 3 个以上的连续英文字母，说明这段是“句子里夹着公式”
+  function looksLikeProse(text) {
+    let t = text;
+    for (let i = 0; i < 2; i++) t = t.replace(/\{[^{}]*\}/g, " ");
+    t = t.replace(/\\[a-zA-Z]+/g, " ");
+    return /[A-Za-z]{3,}/.test(t);
+  }
+
   function looksLikeBareTex(text) {
     const t = cleanBareTex(text);
     if (!t || t.length > 2000) return false;
@@ -357,6 +432,8 @@
     if (!/=/.test(t) && !/\\(frac|sqrt|sum|int|partial|begin|implies|Rightarrow|to|cdot|times|le|ge|neq|approx)\b/.test(t)) {
       return false;
     }
+    // 句子里夹着公式（如“inline [ \frac{1}{2} ] end”）交给括号规则处理，不走整段公式
+    if (looksLikeProse(t)) return false;
     return true;
   }
 
@@ -434,6 +511,15 @@
 
   function scanMath() {
     if (!settings.latexConvert || !HAVE_KATEX) return;
+    // 滚动过程中不改 DOM：虚拟列表正在测量高度
+    if (isScrolling()) {
+      scheduleScan(500);
+      return;
+    }
+
+    const anchor = document.querySelector(".ds-markdown");
+    const nearBottom = anchor ? isNearBottom(anchor) : true;
+
     const roots = document.querySelectorAll(".ds-markdown");
     for (const root of roots) {
       if (root.closest(".dsv-math")) continue;
@@ -442,6 +528,8 @@
         if (block.closest("pre, code, .dsv-math, .md-code-block")) continue;
         if (hasBlockChild(block)) continue;
         if (!/[\[(\\^_{]/.test(block.textContent || "")) continue;
+        // 不是停在底部时，不动视口上方的块，避免改变高度造成跳动
+        if (!nearBottom && block.getBoundingClientRect().top < 0) continue;
         const sig = signatureOf(block);
         if (blockSignature.get(block) === sig) continue;
         blockSignature.set(block, sig);
@@ -634,14 +722,16 @@
 
   function boot() {
     startObserver();
+    syncThink();
+    scanMath();
+    requestAnimationFrame(() => {
+      syncThink();
+      scanMath();
+    });
     setTimeout(() => {
       scanMath();
       syncThink();
-    }, 300);
-    setTimeout(() => {
-      scanMath();
-      syncThink();
-    }, 1500);
+    }, 1200);
   }
 
   /* ------------------------------------------------------------------ */
