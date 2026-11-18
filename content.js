@@ -22,6 +22,7 @@
   let syntheticClick = false;
   let lastScrollAt = 0;
   let scrollIdleTimer = 0;
+  let lastSelfAdjustAt = 0;
 
   const HAVE_KATEX = typeof katex !== "undefined" && katex && typeof katex.renderToString === "function";
 
@@ -142,6 +143,15 @@
     const last = clickLock.get(block.container) || 0;
     if (Date.now() - last < 250) return false;
     clickLock.set(block.container, Date.now());
+
+    // 折叠/展开会改变高度；拿“块后面的内容”当参照，改完把滚动位置补回去
+    const scroller = scrollParentOf(block.container);
+    const ref =
+      block.container.nextElementSibling ||
+      (block.container.parentElement && block.container.parentElement.nextElementSibling) ||
+      null;
+    const topBefore = ref ? ref.getBoundingClientRect().top : 0;
+
     syntheticClick = true;
     try {
       block.header.click();
@@ -149,6 +159,21 @@
       // ignore
     }
     syntheticClick = false;
+
+    const compensate = () => {
+      if (!scroller || !ref) return;
+      if (isScrolling()) return;
+      const shift = ref.getBoundingClientRect().top - topBefore;
+      if (Math.abs(shift) > 0.5) {
+        lastSelfAdjustAt = Date.now();
+        scroller.scrollTop = scroller.scrollTop + shift;
+      }
+    };
+    compensate();
+    queueMicrotask(compensate);
+    requestAnimationFrame(compensate);
+    setTimeout(compensate, 80);
+
     if (record) rememberBlock(block.key, wantOpen);
     return true;
   }
@@ -161,6 +186,8 @@
   }
 
   function onScrollActivity() {
+    // 补偿滚动位置引起的 scroll 事件不算用户滚动
+    if (Date.now() - lastSelfAdjustAt < 150) return;
     lastScrollAt = Date.now();
     clearTimeout(scrollIdleTimer);
     scrollIdleTimer = setTimeout(() => {
@@ -191,16 +218,6 @@
     return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160;
   }
 
-  function isBelowViewport(el) {
-    return el.getBoundingClientRect().top > window.innerHeight + 40;
-  }
-
-  /* 停在底部时可以改上面的高度；否则只动视口下方的块 */
-  function mayAdjust(block, nearBottom) {
-    if (nearBottom) return true;
-    return isBelowViewport(block.container);
-  }
-
   let thinkQueued = false;
   function scheduleThink() {
     if (thinkQueued) return;
@@ -218,9 +235,10 @@
 
     const blocks = thinkBlocks();
     if (!blocks.length) return;
-    const nearBottom = isNearBottom(blocks[0].container);
 
+    let acted = 0;
     for (const block of blocks) {
+      if (acted >= 20) break; // 一次最多处理 20 个，剩下的等下一轮，避免卡顿
       const generating = isGeneratingTitle(block.title);
       if (generating) {
         wasGenerating.add(block.container);
@@ -228,17 +246,16 @@
       }
       if (!isFinishedTitle(block.title)) continue;
       if (userTouched.has(block.container)) continue;
-      if (!mayAdjust(block, nearBottom)) continue;
 
       const open = isOpenBlock(block.container);
       const stored = settings.rememberState ? storedThinkState[block.key] : undefined;
 
       if (stored === "open") {
-        if (!open) setBlockOpen(block, true);
+        if (!open && setBlockOpen(block, true)) acted++;
         continue;
       }
       if (stored === "closed") {
-        if (open) setBlockOpen(block, false);
+        if (open && setBlockOpen(block, false)) acted++;
         continue;
       }
 
@@ -248,7 +265,7 @@
         (settings.collapseDefault && !seenGenerating) ||
         (settings.autoCollapseOnDone && seenGenerating);
       if (shouldCollapse && open) {
-        setBlockOpen(block, false);
+        if (setBlockOpen(block, false)) acted++;
       }
     }
   }
