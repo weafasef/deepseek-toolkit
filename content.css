@@ -43,3 +43,142 @@
 [data-dsv-collapsed="1"] .ds-think-content {
   display: none !important;
 }
+
+/* ---------------- 阅读模式（整页长文档） ---------------- */
+
+#dsv-reader {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  background: #fff;
+  color: #1b1d23;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+#dsv-reader .dsv-r-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fafbfc;
+  flex-shrink: 0;
+}
+
+#dsv-reader .dsv-r-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+#dsv-reader .dsv-r-meta {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+#dsv-reader .dsv-r-search {
+  margin-left: auto;
+  width: 220px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12.5px;
+  outline: none;
+}
+
+#dsv-reader .dsv-r-search:focus {
+  border-color: #4d6bfe;
+}
+
+#dsv-reader .dsv-r-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: #fff;
+  color: #4b5563;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+#dsv-reader .dsv-r-btn:hover {
+  border-color: #c7cdd6;
+  color: #111827;
+}
+
+#dsv-reader .dsv-r-close {
+  background: #1f2329;
+  border-color: #1f2329;
+  color: #fff;
+}
+
+#dsv-reader .dsv-r-close:hover {
+  background: #000;
+  color: #fff;
+}
+
+#dsv-reader .dsv-r-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 26px 20px 120px;
+}
+
+#dsv-reader .dsv-r-item {
+  max-width: 880px;
+  margin: 0 auto 26px;
+  padding-bottom: 22px;
+  border-bottom: 1px dashed #e8eaee;
+}
+
+#dsv-reader .dsv-r-item[hidden] {
+  display: none;
+}
+
+#dsv-reader .dsv-r-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: #6b7280;
+  background: #f2f4f7;
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-bottom: 8px;
+}
+
+/* 克隆过来的思维链：默认折叠，点击标题栏切换 */
+#dsv-reader [data-dsv-collapsed="1"] .ds-think-content {
+  display: none !important;
+}
+
+#dsv-reader .dsv-r-loading {
+  max-width: 880px;
+  margin: 60px auto;
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 2;
+}
+
+#dsv-reader .dsv-r-progress {
+  display: inline-block;
+  min-width: 120px;
+  height: 4px;
+  border-radius: 999px;
+  background: #eef0f4;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+#dsv-reader .dsv-r-progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #4d6bfe;
+  transition: width 0.2s;
+}
+
+body.dsv-reader-open {
+  overflow: hidden !important;
+}

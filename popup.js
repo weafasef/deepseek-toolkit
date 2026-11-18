@@ -18,6 +18,7 @@
   const inputs = Array.from(document.querySelectorAll("input[data-key]"));
   const collapseAllBtn = document.getElementById("collapseAllBtn");
   const expandAllBtn = document.getElementById("expandAllBtn");
+  const openReaderBtn = document.getElementById("openReaderBtn");
 
   function isDeepSeekTab(tab) {
     try {
@@ -86,6 +87,19 @@
     const res = await sendToTab({ type: "DSV_SET_ALL", open: false });
     if (res?.ok) statBar.textContent = `已折叠 ${res.count} 个思维链块`;
     else statBar.textContent = "操作失败，请刷新 DeepSeek 页面后重试";
+  });
+
+  openReaderBtn.addEventListener("click", async () => {
+    if (!isDeepSeekTab(activeTab)) {
+      statBar.textContent = "请先打开 chat.deepseek.com 的对话页";
+      return;
+    }
+    const res = await sendToTab({ type: "DSV_OPEN_READER" });
+    if (res?.ok) {
+      window.close();
+    } else {
+      statBar.textContent = "打开失败，请刷新 DeepSeek 页面后重试";
+    }
   });
 
   expandAllBtn.addEventListener("click", async () => {

@@ -814,6 +814,195 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* 阅读模式：抓取整段对话，用静态长文档重新渲染                           */
+  /* ------------------------------------------------------------------ */
+
+  let readerEl = null;
+  let readerRestore = null;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function harvestConversation(onProgress) {
+    const first = document.querySelector("[data-virtual-list-item-key]");
+    if (!first) return { items: [], scroller: null, originalTop: 0 };
+
+    const scroller = scrollParentOf(first);
+    const originalTop = scroller ? scroller.scrollTop : 0;
+    const collected = new Map();
+    const orderedKeys = [];
+    const MAX_ITEMS = 300;
+    const MAX_MS = 30000;
+    const started = Date.now();
+
+    const grab = () => {
+      const fresh = [];
+      for (const el of document.querySelectorAll("[data-virtual-list-item-key]")) {
+        const key = el.getAttribute("data-virtual-list-item-key");
+        if (!key || collected.has(key)) continue;
+        collected.set(key, el.cloneNode(true));
+        fresh.push(key);
+        if (collected.size >= MAX_ITEMS) break;
+      }
+      if (fresh.length) orderedKeys.unshift(...fresh);
+      return fresh.length;
+    };
+
+    grab();
+    onProgress(collected.size);
+
+    let idle = 0;
+    for (let step = 0; step < 220; step++) {
+      if (collected.size >= MAX_ITEMS || Date.now() - started > MAX_MS) break;
+      if (!scroller) break;
+
+      if (scroller.scrollTop <= 0) {
+        if (idle++ >= 2) break;
+      } else {
+        idle = 0;
+      }
+
+      const span = Math.max(220, scroller.clientHeight * 0.72);
+      scroller.scrollTop = Math.max(0, scroller.scrollTop - span);
+      await sleep(170);
+
+      const added = grab();
+      if (added) onProgress(collected.size);
+    }
+
+    if (scroller) scroller.scrollTop = originalTop;
+
+    return {
+      items: orderedKeys.map((k) => collected.get(k)),
+      scroller,
+      originalTop
+    };
+  }
+
+  function sanitizeClone(src) {
+    const el = src.cloneNode(true);
+    el.removeAttribute("data-virtual-list-item-key");
+    for (const bad of el.querySelectorAll("script, style, link, iframe, textarea")) bad.remove();
+    for (const node of el.querySelectorAll("[id]")) node.removeAttribute("id");
+    // 克隆出来的思维链一律默认收起，点击标题栏再展开
+    for (const think of el.querySelectorAll(CONTAINER_SELECTOR)) {
+      think.setAttribute("data-dsv-collapsed", "1");
+    }
+    return el;
+  }
+
+  async function openReader() {
+    if (readerEl) {
+      readerEl.querySelector(".dsv-r-body")?.scrollIntoView({ block: "start" });
+      return;
+    }
+
+    readerEl = document.createElement("div");
+    readerEl.id = "dsv-reader";
+    readerEl.innerHTML = `
+      <header class="dsv-r-header">
+        <span class="dsv-r-title">阅读模式</span>
+        <span class="dsv-r-meta">正在读取…</span>
+        <input class="dsv-r-search" type="search" placeholder="在当前对话里搜索…" />
+        <button class="dsv-r-btn" data-act="collapse">全部收起</button>
+        <button class="dsv-r-btn" data-act="expand">全部展开</button>
+        <button class="dsv-r-btn dsv-r-close" data-act="close">关闭</button>
+      </header>
+      <div class="dsv-r-body">
+        <div class="dsv-r-loading">正在从页面里读取对话…<span class="dsv-r-progress"><i></i></span></div>
+      </div>
+    `;
+    document.body.appendChild(readerEl);
+    document.body.classList.add("dsv-reader-open");
+
+    const body = readerEl.querySelector(".dsv-r-body");
+    const meta = readerEl.querySelector(".dsv-r-meta");
+    const bar = readerEl.querySelector(".dsv-r-progress i");
+
+    const { items, scroller, originalTop } = await harvestConversation((n) => {
+      meta.textContent = `已读取 ${n} 条…`;
+      if (bar) bar.style.width = `${Math.min(92, 15 + n)}%`;
+    });
+    readerRestore = { scroller, originalTop };
+
+    if (!items.length) {
+      body.innerHTML = `<div class="dsv-r-loading">没有读到消息。<br />请确认当前在对话页面，再重新打开阅读模式。</div>`;
+      meta.textContent = "0 条";
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const src of items) {
+      const holder = document.createElement("div");
+      holder.className = "dsv-r-item";
+      holder.appendChild(sanitizeClone(src));
+      frag.appendChild(holder);
+    }
+    body.innerHTML = "";
+    body.appendChild(frag);
+    meta.textContent = `${items.length} 条消息`;
+
+    // 阅读模式下也把公式补渲染一遍
+    scheduleScan(60);
+  }
+
+  function closeReader() {
+    if (!readerEl) return;
+    readerEl.remove();
+    readerEl = null;
+    document.body.classList.remove("dsv-reader-open");
+    if (readerRestore && readerRestore.scroller) {
+      try {
+        readerRestore.scroller.scrollTop = readerRestore.originalTop;
+      } catch {
+        // ignore
+      }
+    }
+    readerRestore = null;
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && readerEl) closeReader();
+  }, true);
+
+  document.addEventListener("click", (e) => {
+    if (!readerEl || !readerEl.contains(e.target)) return;
+
+    const act = e.target.closest("[data-act]");
+    if (act) {
+      const action = act.dataset.act;
+      if (action === "close") {
+        closeReader();
+        return;
+      }
+      if (action === "collapse" || action === "expand") {
+        const want = action === "expand" ? "0" : "1";
+        for (const think of readerEl.querySelectorAll(CONTAINER_SELECTOR)) {
+          if (want === "1") think.setAttribute("data-dsv-collapsed", "1");
+          else think.removeAttribute("data-dsv-collapsed");
+        }
+        return;
+      }
+    }
+
+    // 点击思维链标题栏：切换我们自己的折叠属性
+    const think = e.target.closest(CONTAINER_SELECTOR);
+    if (think && think.firstElementChild && think.firstElementChild.contains(e.target)) {
+      if (think.hasAttribute("data-dsv-collapsed")) think.removeAttribute("data-dsv-collapsed");
+      else think.setAttribute("data-dsv-collapsed", "1");
+    }
+  }, true);
+
+  document.addEventListener("input", (e) => {
+    if (!readerEl || e.target !== readerEl.querySelector(".dsv-r-search")) return;
+    const q = (e.target.value || "").trim().toLowerCase();
+    for (const item of readerEl.querySelectorAll(".dsv-r-item")) {
+      item.hidden = Boolean(q) && !(item.textContent || "").toLowerCase().includes(q);
+    }
+  }, true);
+
+  /* ------------------------------------------------------------------ */
   /* 与面板通信                                                           */
   /* ------------------------------------------------------------------ */
 
@@ -822,6 +1011,11 @@
       const count = setAllThink(Boolean(msg.open));
       scheduleThink(0);
       sendResponse({ ok: true, count });
+      return false;
+    }
+    if (msg?.type === "DSV_OPEN_READER") {
+      sendResponse({ ok: true });
+      openReader();
       return false;
     }
     if (msg?.type === "DSV_STATUS") {
