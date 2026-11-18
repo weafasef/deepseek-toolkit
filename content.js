@@ -105,8 +105,17 @@
     return out;
   }
 
-  function isOpenBlock(container) {
+  function hasThinkContent(container) {
     return Boolean(container.querySelector(".ds-think-content"));
+  }
+
+  // 视觉上是否收起：用属性 + CSS 直接隐藏，React 内部可能仍认为“展开”
+  function isCollapsedBlock(container) {
+    return container.hasAttribute("data-dsv-collapsed") || !hasThinkContent(container);
+  }
+
+  function isOpenBlock(container) {
+    return !isCollapsedBlock(container);
   }
 
   /* 用虚拟列表给每条消息的稳定 key 当状态标识，不再用“第几个” */
@@ -137,18 +146,30 @@
   }
 
   function setBlockOpen(block, wantOpen, { record = false } = {}) {
-    const open = isOpenBlock(block.container);
-    if (open === wantOpen) return false;
+    const collapsed = isCollapsedBlock(block.container);
+    if (wantOpen === !collapsed) return false;
     const last = clickLock.get(block.container) || 0;
-    if (Date.now() - last < 250) return false;
+    if (Date.now() - last < 120) return false;
     clickLock.set(block.container, Date.now());
-    syntheticClick = true;
-    try {
-      block.header.click();
-    } catch {
-      // ignore
+
+    if (!wantOpen) {
+      // 折叠：加属性让 CSS 隐藏，高度在本次布局就定下来，不必等 React 异步提交
+      if (hasThinkContent(block.container)) {
+        block.container.setAttribute("data-dsv-collapsed", "1");
+      }
+    } else if (block.container.hasAttribute("data-dsv-collapsed")) {
+      block.container.removeAttribute("data-dsv-collapsed");
+    } else {
+      // React 内部是关的，只能点开（少见的“恢复记住的展开状态”）
+      syntheticClick = true;
+      try {
+        block.header.click();
+      } catch {
+        // ignore
+      }
+      syntheticClick = false;
     }
-    syntheticClick = false;
+
     if (record) rememberBlock(block.key, wantOpen);
     return true;
   }
@@ -278,6 +299,17 @@
       if (!isThinkTitle(title)) return;
 
       userTouched.add(container);
+
+      // 我们自己用 CSS 藏起来的块，React 内部仍是“展开”：
+      // 直接放开属性并拦掉这次点击，避免 React 又把它切成“关闭”导致点不开
+      if (container.hasAttribute("data-dsv-collapsed") && hasThinkContent(container)) {
+        container.removeAttribute("data-dsv-collapsed");
+        e.preventDefault();
+        e.stopPropagation();
+        rememberBlock(blockKey(container, title), true);
+        return;
+      }
+
       setTimeout(() => {
         const open = isOpenBlock(container);
         rememberBlock(blockKey(container, blockTitle(header) || title), open);
@@ -693,8 +725,55 @@
 
   let lastPath = location.pathname;
 
-  const observer = new MutationObserver(() => {
-    scheduleThink(220);
+  // 新消息挂载时，赶在浏览器绘制之前把状态定下来（折叠用属性，不改 React）
+  function applyInstantState(root) {
+    if (!root || root.nodeType !== 1) return;
+    const containers = [];
+    if (root.matches && root.matches(CONTAINER_SELECTOR)) containers.push(root);
+    if (root.querySelectorAll) {
+      for (const el of root.querySelectorAll(CONTAINER_SELECTOR)) containers.push(el);
+    }
+    if (!containers.length) return;
+
+    for (const container of containers) {
+      const header = container.firstElementChild;
+      if (!header) continue;
+      const title = blockTitle(header);
+      if (!isThinkTitle(title) || !isFinishedTitle(title)) continue;
+      if (userTouched.has(container)) continue;
+
+      const key = blockKey(container, title);
+      const stored = settings.rememberState ? storedThinkState[key] : undefined;
+
+      if (stored === "open") {
+        if (!hasThinkContent(container)) {
+          syntheticClick = true;
+          try {
+            header.click();
+          } catch {
+            // ignore
+          }
+          syntheticClick = false;
+        }
+        continue;
+      }
+
+      if (stored === "closed" || settings.collapseDefault) {
+        if (hasThinkContent(container)) {
+          container.setAttribute("data-dsv-collapsed", "1");
+        }
+      }
+    }
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (!m.addedNodes || !m.addedNodes.length) continue;
+      for (const node of m.addedNodes) {
+        if (node.nodeType === 1) applyInstantState(node);
+      }
+    }
+    scheduleThink();
     scheduleScan(300);
   });
 

@@ -38,3 +38,8 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* 用属性直接折叠：不依赖 React 的异步更新，高度在本次布局就确定 */
+[data-dsv-collapsed="1"] .ds-think-content {
+  display: none !important;
+}
