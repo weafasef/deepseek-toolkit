@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DeepSeek 网页增强",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "思维链默认收起、记住展开状态、一键全部折叠/展开；并让 \\[...\\]、\\(...\\) 正常渲染成公式，复制公式时自动拿到完整 LaTeX 源码。",
   "icons": {
     "16": "icons/icon16.png",
@@ -19,20 +19,37 @@
       "128": "icons/icon128.png"
     }
   },
-  "permissions": ["storage", "activeTab"],
-  "host_permissions": ["https://chat.deepseek.com/*"],
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://chat.deepseek.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://chat.deepseek.com/*"],
-      "js": ["vendor/katex.min.js", "content.js"],
-      "css": ["vendor/katex.min.css", "content.css"],
+      "matches": [
+        "https://chat.deepseek.com/*"
+      ],
+      "js": [
+        "vendor/katex.min.js",
+        "content.js"
+      ],
+      "css": [
+        "vendor/katex.min.css",
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["vendor/fonts/*"],
-      "matches": ["https://chat.deepseek.com/*"]
+      "resources": [
+        "vendor/fonts/*"
+      ],
+      "matches": [
+        "https://chat.deepseek.com/*"
+      ]
     }
   ]
 }

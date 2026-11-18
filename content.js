@@ -336,9 +336,55 @@
     return out;
   }
 
+  // 去掉整段外面的孤立括号（模型只写了 \] 或者括号单独占一行的情况）
+  function cleanBareTex(text) {
+    let t = text.trim();
+    t = t.replace(/^\[\s*\n+/, "");
+    t = t.replace(/\n+\s*\]\]?$/, "");
+    t = t.replace(/^\[\s+/, "");
+    t = t.replace(/\s+\]\]?$/, "");
+    return t.trim();
+  }
+
+  function looksLikeBareTex(text) {
+    const t = cleanBareTex(text);
+    if (!t || t.length > 2000) return false;
+    if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(t)) return false;
+    if (/^https?:/i.test(t)) return false;
+    // 必须有 LaTeX 命令，或者 ^{ } / _{ } 这种结构
+    if (!/\\[a-zA-Z]{2,}/.test(t) && !/\^\{|_\{/.test(t)) return false;
+    // 还必须有等式或明显的公式命令，避免把「so [ \alpha ] ok」这种句子当成公式
+    if (!/=/.test(t) && !/\\(frac|sqrt|sum|int|partial|begin|implies|Rightarrow|to|cdot|times|le|ge|neq|approx)\b/.test(t)) {
+      return false;
+    }
+    return true;
+  }
+
+  function hideGhostBrackets(block) {
+    for (const el of [block.previousElementSibling, block.nextElementSibling]) {
+      if (!el) continue;
+      const t = (el.textContent || "").trim();
+      if (t === "[" || t === "]" || t === "\\[" || t === "\\]") {
+        el.style.display = "none";
+      }
+    }
+  }
+
   function scanBlock(block) {
     const map = buildTextMap(block);
-    if (!map.text || !/[\[(]/.test(map.text)) return;
+    if (!map.text) return;
+
+    // 情况一：整段本身就是 LaTeX（常见于 \[ ... \] 被渲染成纯文本，或只剩一个收尾的 ]）
+    if (!block.querySelector("a") && looksLikeBareTex(map.text)) {
+      const node = buildMathNode(cleanBareTex(map.text), true);
+      if (node) {
+        block.replaceChildren(node);
+        hideGhostBrackets(block);
+        return;
+      }
+    }
+
+    if (!/[\[(]/.test(map.text)) return;
 
     const matches = findMatches(map.text);
     if (!matches.length) return;
@@ -395,7 +441,7 @@
       for (const block of blocks) {
         if (block.closest("pre, code, .dsv-math, .md-code-block")) continue;
         if (hasBlockChild(block)) continue;
-        if ((block.textContent || "").indexOf("[") === -1 && (block.textContent || "").indexOf("(") === -1) continue;
+        if (!/[\[(\\^_{]/.test(block.textContent || "")) continue;
         const sig = signatureOf(block);
         if (blockSignature.get(block) === sig) continue;
         blockSignature.set(block, sig);
