@@ -6,6 +6,7 @@
   window.__dsToolkitLoaded = true;
 
   const DEFAULTS = {
+    readerDefault: true,       // 默认直接打开扩展覆盖页
     collapseDefault: true,     // 思维链默认收起
     autoCollapseOnDone: true,  // 生成完成自动收起
     rememberState: true,       // 记住每条的展开状态
@@ -541,18 +542,13 @@
     return text.length + "|" + count + "|" + text.slice(-40);
   }
 
-  function scanMath() {
-    if (!settings.latexConvert || !HAVE_KATEX) return;
-    // 滚动过程中不改 DOM：虚拟列表正在测量高度
-    if (isScrolling()) {
-      scheduleScan(500);
-      return;
+  function scanMathIn(scope, { checkViewport = false, nearBottom = true } = {}) {
+    if (!settings.latexConvert || !HAVE_KATEX || !scope) return;
+    const roots = [];
+    if (scope.matches && scope.matches(".ds-markdown")) roots.push(scope);
+    if (scope.querySelectorAll) {
+      for (const r of scope.querySelectorAll(".ds-markdown")) roots.push(r);
     }
-
-    const anchor = document.querySelector(".ds-markdown");
-    const nearBottom = anchor ? isNearBottom(anchor) : true;
-
-    const roots = document.querySelectorAll(".ds-markdown");
     for (const root of roots) {
       if (root.closest(".dsv-math")) continue;
       const blocks = root.querySelectorAll("p, li, td, th, h1, h2, h3, h4, h5, h6");
@@ -560,14 +556,27 @@
         if (block.closest("pre, code, .dsv-math, .md-code-block")) continue;
         if (hasBlockChild(block)) continue;
         if (!/[\[(\\^_{]/.test(block.textContent || "")) continue;
-        // 不是停在底部时，不动视口上方的块，避免改变高度造成跳动
-        if (!nearBottom && block.getBoundingClientRect().top < 0) continue;
+        if (checkViewport && !nearBottom && !block.closest("#dsv-reader") && block.getBoundingClientRect().top < 0) {
+          continue;
+        }
         const sig = signatureOf(block);
         if (blockSignature.get(block) === sig) continue;
         blockSignature.set(block, sig);
         scanBlock(block);
       }
     }
+  }
+
+  function scanMath() {
+    if (!settings.latexConvert || !HAVE_KATEX) return;
+    if (readerEl) scanMathIn(readerEl, { checkViewport: false });
+    if (isScrolling()) {
+      scheduleScan(500);
+      return;
+    }
+    const anchor = document.querySelector(".ds-markdown");
+    const nearBottom = anchor ? isNearBottom(anchor) : true;
+    scanMathIn(document.body, { checkViewport: true, nearBottom });
   }
 
   let scanScheduled = false;
@@ -801,8 +810,12 @@
 
   function boot() {
     startObserver();
+    ensureFab();
     syncThink();
     scanMath();
+    if (settings.readerDefault && !readerUserClosed) {
+      openReader();
+    }
     requestAnimationFrame(() => {
       syncThink();
       scanMath();
@@ -814,87 +827,555 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* 阅读模式：抓取整段对话，用静态长文档重新渲染                           */
+  /* 扩展覆盖页（默认启用：静态长文档 + 直接提问/深度思考/搜索/会话切换）    */
   /* ------------------------------------------------------------------ */
 
   let readerEl = null;
   let readerRestore = null;
+  let readerWatch = null;
+  let readerSyncTimer = 0;
+  let readerKeys = new Set();
+  let readerBody = null;
+  let readerStatus = null;
+  let readerMeta = null;
+  let readerTitleEl = null;
+  let readerSendBtn = null;
+  let readerInput = null;
+  let readerThinkPill = null;
+  let readerSearchPill = null;
+  let readerSessionsEl = null;
+  let readerSending = false;
+  let readerUserClosed = false;
+  let harvestToken = 0;
+  let readerSessionPath = "";
+  const readerThinkManual = new Map(); // key -> "open" | "closed"
+  const readerSeenGenerating = new Set();
+  const sessionCache = new Map(); // pathname -> Map(key -> clonedElement)
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function harvestConversation(onProgress) {
-    const first = document.querySelector("[data-virtual-list-item-key]");
-    if (!first) return { items: [], scroller: null, originalTop: 0 };
-
-    const scroller = scrollParentOf(first);
-    const originalTop = scroller ? scroller.scrollTop : 0;
-    const collected = new Map();
-    const orderedKeys = [];
-    const MAX_ITEMS = 300;
-    const MAX_MS = 30000;
-    const started = Date.now();
-
-    const grab = () => {
-      const fresh = [];
-      for (const el of document.querySelectorAll("[data-virtual-list-item-key]")) {
-        const key = el.getAttribute("data-virtual-list-item-key");
-        if (!key || collected.has(key)) continue;
-        collected.set(key, el.cloneNode(true));
-        fresh.push(key);
-        if (collected.size >= MAX_ITEMS) break;
-      }
-      if (fresh.length) orderedKeys.unshift(...fresh);
-      return fresh.length;
-    };
-
-    grab();
-    onProgress(collected.size);
-
-    let idle = 0;
-    for (let step = 0; step < 220; step++) {
-      if (collected.size >= MAX_ITEMS || Date.now() - started > MAX_MS) break;
-      if (!scroller) break;
-
-      if (scroller.scrollTop <= 0) {
-        if (idle++ >= 2) break;
-      } else {
-        idle = 0;
-      }
-
-      const span = Math.max(220, scroller.clientHeight * 0.72);
-      scroller.scrollTop = Math.max(0, scroller.scrollTop - span);
-      await sleep(170);
-
-      const added = grab();
-      if (added) onProgress(collected.size);
-    }
-
-    if (scroller) scroller.scrollTop = originalTop;
-
-    return {
-      items: orderedKeys.map((k) => collected.get(k)),
-      scroller,
-      originalTop
-    };
+  function nextFrameAndDelay(ms = 32) {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, ms));
+    });
   }
 
-  function sanitizeClone(src) {
+  function ensureFab() {
+    if (document.getElementById("dsv-fab")) return;
+    const fab = document.createElement("button");
+    fab.id = "dsv-fab";
+    fab.type = "button";
+    fab.textContent = "📖 扩展页面";
+    fab.title = "打开 DeepSeek 扩展长文档页面";
+    fab.addEventListener("click", () => {
+      readerUserClosed = false;
+      openReader();
+    });
+    document.body.appendChild(fab);
+  }
+
+  function siteVirtualItems() {
+    const out = [];
+    for (const el of document.querySelectorAll("[data-virtual-list-item-key]")) {
+      if (readerEl && readerEl.contains(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
+  function isAssistantItem(el) {
+    return Boolean(
+      el.querySelector(".ds-assistant-message-main-content") ||
+      el.querySelector(CONTAINER_SELECTOR)
+    );
+  }
+
+  function enhanceCodeBlocks(root) {
+    for (const block of root.querySelectorAll(".md-code-block")) {
+      const banner = block.querySelector(".md-code-block-banner") || block.firstElementChild;
+      if (!banner || banner.querySelector(".dsv-code-copy-btn")) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dsv-code-copy-btn";
+      btn.textContent = "复制代码";
+      banner.appendChild(btn);
+    }
+  }
+
+  function sanitizeClone(src, key) {
     const el = src.cloneNode(true);
     el.removeAttribute("data-virtual-list-item-key");
     for (const bad of el.querySelectorAll("script, style, link, iframe, textarea")) bad.remove();
     for (const node of el.querySelectorAll("[id]")) node.removeAttribute("id");
-    // 克隆出来的思维链一律默认收起，点击标题栏再展开
+
     for (const think of el.querySelectorAll(CONTAINER_SELECTOR)) {
-      think.setAttribute("data-dsv-collapsed", "1");
+      const header = think.firstElementChild;
+      const title = header ? blockTitle(header) : "";
+      const generating = isGeneratingTitle(title);
+      if (generating) readerSeenGenerating.add(key);
+
+      const manual = readerThinkManual.get(key);
+      if (manual === "open") {
+        think.removeAttribute("data-dsv-collapsed");
+      } else if (manual === "closed") {
+        think.setAttribute("data-dsv-collapsed", "1");
+      } else if (generating) {
+        think.removeAttribute("data-dsv-collapsed");
+      } else {
+        const wasGen = readerSeenGenerating.has(key);
+        const shouldCollapse =
+          (wasGen && settings.autoCollapseOnDone) ||
+          (!wasGen && settings.collapseDefault);
+        if (shouldCollapse) think.setAttribute("data-dsv-collapsed", "1");
+      }
     }
+
+    enhanceCodeBlocks(el);
+    scanMathIn(el, { checkViewport: false });
     return el;
+  }
+
+  function extractPlainWithLatex(root) {
+    if (!root) return "";
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    const formulas = formulasInRange(range);
+    if (formulas.length) {
+      const built = buildClipboardText(range, formulas);
+      if (built) return built;
+    }
+    return (root.innerText || root.textContent || "").trim();
+  }
+
+  function makeHolder(key, sourceEl) {
+    const assistant = isAssistantItem(sourceEl);
+    const hasThink = Boolean(sourceEl.querySelector(CONTAINER_SELECTOR));
+    const holder = document.createElement("div");
+    holder.className = `dsv-r-item ${assistant ? "dsv-role-assistant" : "dsv-role-user"}`;
+    holder.dataset.key = key;
+    holder.dataset.role = assistant ? "assistant" : "user";
+    holder.dataset.sig = `${(sourceEl.textContent || "").length}|${sourceEl.querySelectorAll(".katex, .dsv-math, pre").length}`;
+
+    const head = document.createElement("div");
+    head.className = "dsv-r-item-head";
+    head.innerHTML = `
+      <span class="dsv-r-badge">${assistant ? "🤖 DeepSeek" : "🧑 你"}</span>
+      <div class="dsv-r-actions">
+        ${assistant && hasThink ? '<button type="button" class="dsv-r-act-btn" data-item-act="toggle-think">折叠/展开思考</button>' : ""}
+        <button type="button" class="dsv-r-act-btn" data-item-act="copy">${assistant ? "复制全文" : "复制提问"}</button>
+        ${assistant
+          ? '<button type="button" class="dsv-r-act-btn" data-item-act="regen">重新生成</button>'
+          : '<button type="button" class="dsv-r-act-btn" data-item-act="reask">编辑重问</button>'}
+      </div>
+    `;
+
+    const contentWrap = document.createElement("div");
+    contentWrap.className = "dsv-r-item-body";
+    contentWrap.appendChild(sanitizeClone(sourceEl, key));
+
+    holder.appendChild(head);
+    holder.appendChild(contentWrap);
+    return holder;
+  }
+
+  function updateHolderContent(holder, sourceEl, key) {
+    const assistant = isAssistantItem(sourceEl);
+    holder.className = `dsv-r-item ${assistant ? "dsv-role-assistant" : "dsv-role-user"}`;
+    holder.dataset.role = assistant ? "assistant" : "user";
+    holder.dataset.sig = `${(sourceEl.textContent || "").length}|${sourceEl.querySelectorAll(".katex, .dsv-math, pre").length}`;
+    const body = holder.querySelector(".dsv-r-item-body");
+    if (body) {
+      body.replaceChildren(sanitizeClone(sourceEl, key));
+    } else {
+      holder.replaceWith(makeHolder(key, sourceEl));
+    }
+  }
+
+  function readerAtBottom() {
+    if (!readerBody) return true;
+    return readerBody.scrollHeight - readerBody.scrollTop - readerBody.clientHeight < 140;
+  }
+
+  function readerScrollBottom() {
+    if (readerBody) readerBody.scrollTop = readerBody.scrollHeight;
+  }
+
+  function setReaderStatus(text) {
+    if (readerStatus) readerStatus.textContent = text || "";
+  }
+
+  /* -------- 与原页面控件联动（输入框、深度思考、联网搜索、停止生成、会话栏） -------- */
+
+  function findSiteComposer() {
+    const list = Array.from(document.querySelectorAll('textarea[name="search"], textarea, [contenteditable="true"]')).filter(
+      (el) => !readerEl || !readerEl.contains(el)
+    );
+    if (!list.length) return null;
+    list.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+    return list[0];
+  }
+
+  function findSiteToggleButtons() {
+    let thinkBtn = null;
+    let searchBtn = null;
+    const candidates = document.querySelectorAll('.ds-toggle-button, [role="button"], button');
+    for (const el of candidates) {
+      if (readerEl && readerEl.contains(el)) continue;
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!thinkBtn && /^(深度思考|DeepThink)(\s|$)/i.test(t)) thinkBtn = el;
+      if (!searchBtn && /^(智能搜索|联网搜索|Search)(\s|$)/i.test(t)) searchBtn = el;
+    }
+    return { thinkBtn, searchBtn };
+  }
+
+  function isToggleSelected(btn) {
+    if (!btn) return false;
+    if (btn.classList.contains("ds-toggle-button--selected")) return true;
+    if (btn.getAttribute("aria-pressed") === "true") return true;
+    return false;
+  }
+
+  function syncComposerPills() {
+    if (!readerEl) return;
+    const { thinkBtn, searchBtn } = findSiteToggleButtons();
+    if (readerThinkPill) {
+      readerThinkPill.classList.toggle("active", isToggleSelected(thinkBtn));
+      readerThinkPill.disabled = !thinkBtn;
+    }
+    if (readerSearchPill) {
+      readerSearchPill.classList.toggle("active", isToggleSelected(searchBtn));
+      readerSearchPill.disabled = !searchBtn;
+    }
+  }
+
+  function findSitePrimaryActionBtn(composer) {
+    let box = composer || findSiteComposer();
+    for (let i = 0; i < 6 && box; i++, box = box.parentElement) {
+      const btns = Array.from(
+        box.querySelectorAll('button, [role="button"], .ds-icon-button')
+      ).filter(
+        (b) =>
+          (!readerEl || !readerEl.contains(b)) &&
+          !b.classList.contains("ds-toggle-button") &&
+          b.getBoundingClientRect().width > 0
+      );
+      if (btns.length) {
+        btns.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+        return btns[0];
+      }
+    }
+    return null;
+  }
+
+  function isSiteGenerating() {
+    const items = siteVirtualItems();
+    const last = items[items.length - 1];
+    if (!last) return false;
+    const think = last.querySelector(CONTAINER_SELECTOR);
+    if (think && think.firstElementChild) {
+      const title = blockTitle(think.firstElementChild);
+      if (isGeneratingTitle(title)) return true;
+    }
+    return false;
+  }
+
+  function syncStopButtonState() {
+    if (!readerSendBtn) return;
+    const generating = isSiteGenerating();
+    if (generating) {
+      readerSendBtn.textContent = "⏹ 停止";
+      readerSendBtn.classList.add("stopping");
+      readerSendBtn.disabled = false;
+    } else {
+      readerSendBtn.textContent = "发送";
+      readerSendBtn.classList.remove("stopping");
+      readerSendBtn.disabled = readerSending;
+    }
+  }
+
+  function stopSiteGeneration() {
+    const btn = findSitePrimaryActionBtn();
+    if (btn) {
+      btn.click();
+      setReaderStatus("已停止生成");
+      setTimeout(syncStopButtonState, 120);
+      return true;
+    }
+    return false;
+  }
+
+  async function sendToSite(text) {
+    const composer = findSiteComposer();
+    if (!composer) return { ok: false, reason: "没找到页面的输入框，请确认已登录" };
+
+    // 先 focus 触发 DeepSeek 的 PoW 预热
+    composer.focus();
+    await sleep(30);
+
+    if (composer.tagName === "TEXTAREA") {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(composer, text);
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      composer.textContent = text;
+      composer.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
+    }
+
+    await sleep(40);
+    const before = readerKeys.size;
+    const beforePath = location.pathname;
+
+    const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    composer.dispatchEvent(new KeyboardEvent("keydown", opts));
+    composer.dispatchEvent(new KeyboardEvent("keypress", opts));
+    composer.dispatchEvent(new KeyboardEvent("keyup", opts));
+
+    await sleep(350);
+    if (readerKeys.size === before && location.pathname === beforePath && (composer.value || "").trim()) {
+      const btn = findSitePrimaryActionBtn(composer);
+      if (btn) btn.click();
+      await sleep(350);
+    }
+
+    const cleared = !(composer.value || "").trim();
+    return { ok: cleared || readerKeys.size > before || location.pathname !== beforePath };
+  }
+
+  function syncSidebarSessions() {
+    if (!readerSessionsEl) return;
+    const links = Array.from(document.querySelectorAll('a[href*="/a/chat/s/"]')).filter(
+      (a) => !readerEl || !readerEl.contains(a)
+    );
+    const curPath = location.pathname;
+
+    if (readerTitleEl) {
+      const activeLink = links.find((a) => a.getAttribute("href") === curPath);
+      const pageTitle = (activeLink?.textContent || document.title || "DeepSeek 对话")
+        .replace(/\s*-\s*DeepSeek\s*$/i, "")
+        .trim();
+      readerTitleEl.textContent = pageTitle || "DeepSeek 对话";
+    }
+
+    if (!links.length) {
+      readerSessionsEl.innerHTML = `<div class="dsv-r-session-empty">暂无历史会话列表</div>`;
+      return;
+    }
+
+    const sig = links.map((a) => `${a.getAttribute("href")}:${(a.textContent || "").trim()}`).join("|") + "|" + curPath;
+    if (readerSessionsEl.dataset.sig === sig) return;
+    readerSessionsEl.dataset.sig = sig;
+
+    const frag = document.createDocumentFragment();
+    for (const a of links) {
+      const href = a.getAttribute("href") || "";
+      const title = (a.textContent || "").replace(/\s+/g, " ").trim() || "未命名对话";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dsv-r-session-item" + (href === curPath ? " active" : "");
+      btn.dataset.href = href;
+      btn.textContent = title;
+      btn.title = title;
+      frag.appendChild(btn);
+    }
+    readerSessionsEl.replaceChildren(frag);
+  }
+
+  function triggerNewChat() {
+    const candidates = Array.from(document.querySelectorAll('div[tabindex="0"], button, a, [role="button"]')).filter(
+      (el) => !readerEl || !readerEl.contains(el)
+    );
+    for (const el of candidates) {
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t === "开启新对话" || t === "New chat") {
+        el.click();
+        return;
+      }
+    }
+    if (location.pathname !== "/") {
+      history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  }
+
+  /* ---------------- 极速抓取（0ms 首屏 + 后台高速向上补齐） ---------------- */
+
+  async function harvestAndRenderSession(token) {
+    const sessionPath = location.pathname;
+    readerSessionPath = sessionPath;
+    readerKeys = new Set();
+
+    const initialEls = siteVirtualItems();
+    if (!initialEls.length) {
+      const cached = sessionCache.get(sessionPath);
+      if (cached && cached.size) {
+        const frag = document.createDocumentFragment();
+        for (const [key, clone] of cached.entries()) {
+          readerKeys.add(key);
+          frag.appendChild(makeHolder(key, clone));
+        }
+        readerBody.replaceChildren(frag);
+        readerScrollBottom();
+        if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
+        return;
+      }
+      readerBody.innerHTML = `<div class="dsv-r-loading">新对话 · 直接在下方输入问题开始提问</div>`;
+      if (readerMeta) readerMeta.textContent = "新对话";
+      return;
+    }
+
+    const scroller = scrollParentOf(initialEls[0]);
+    const originalTop = scroller ? scroller.scrollTop : 0;
+    readerRestore = { scroller, originalTop };
+
+    // 第 1 步（0ms）：先把当前视口已挂载的最新消息立刻渲染出来并滚到底部
+    const collected = new Map();
+    const initialFrag = document.createDocumentFragment();
+    for (const el of initialEls) {
+      const key = el.getAttribute("data-virtual-list-item-key");
+      if (!key || readerKeys.has(key)) continue;
+      const clone = el.cloneNode(true);
+      collected.set(key, clone);
+      readerKeys.add(key);
+      initialFrag.appendChild(makeHolder(key, clone));
+    }
+    readerBody.replaceChildren(initialFrag);
+    readerScrollBottom();
+    if (readerMeta) readerMeta.textContent = `已加载 ${readerKeys.size} 条…`;
+
+    // 第 2 步：如果原页面上方还有历史消息，高速向上滚动补齐并无感插入顶部
+    const MAX_ITEMS = 1000;
+    const MAX_MS = 25000;
+    const started = Date.now();
+    let idle = 0;
+
+    if (scroller && scroller.scrollTop > 0) {
+      for (let step = 0; step < 320; step++) {
+        if (token !== harvestToken || !readerEl) return;
+        if (readerKeys.size >= MAX_ITEMS || Date.now() - started > MAX_MS) break;
+
+        if (scroller.scrollTop <= 0) {
+          if (idle++ >= 1) break;
+        } else {
+          idle = 0;
+        }
+
+        const span = Math.max(420, scroller.clientHeight * 1.25);
+        scroller.scrollTop = Math.max(0, scroller.scrollTop - span);
+        // 立即派发 scroll 事件，触发虚拟列表 flushSync 同步挂载
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await nextFrameAndDelay(32);
+        if (token !== harvestToken || !readerEl) return;
+
+        const batch = [];
+        for (const el of siteVirtualItems()) {
+          const key = el.getAttribute("data-virtual-list-item-key");
+          if (!key || readerKeys.has(key)) continue;
+          const clone = el.cloneNode(true);
+          collected.set(key, clone);
+          readerKeys.add(key);
+          batch.push(makeHolder(key, clone));
+        }
+
+        if (batch.length) {
+          const prevHeight = readerBody.scrollHeight;
+          const prevTop = readerBody.scrollTop;
+          const frag = document.createDocumentFragment();
+          for (const h of batch) frag.appendChild(h);
+          readerBody.insertBefore(frag, readerBody.firstChild);
+          // 补偿顶部插入带来的高度增量，保证用户当前视野纹丝不动
+          const delta = readerBody.scrollHeight - prevHeight;
+          readerBody.scrollTop = prevTop + delta;
+          if (readerMeta) readerMeta.textContent = `已同步 ${readerKeys.size} 条…`;
+        }
+      }
+
+      // 恢复到底部，保证后续新消息在原页面底部正常流式挂载
+      scroller.scrollTop = scroller.scrollHeight;
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    if (token !== harvestToken || !readerEl) return;
+    if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
+
+    // 写入会话缓存
+    const orderedCache = new Map();
+    for (const itemEl of readerBody.querySelectorAll(".dsv-r-item")) {
+      const k = itemEl.dataset.key;
+      if (k && collected.has(k)) orderedCache.set(k, collected.get(k));
+    }
+    if (orderedCache.size) sessionCache.set(sessionPath, orderedCache);
+  }
+
+  function watchNewMessages() {
+    if (readerWatch) readerWatch.disconnect();
+    readerWatch = new MutationObserver(() => {
+      if (!readerEl || !readerBody) return;
+      for (const el of siteVirtualItems()) {
+        const key = el.getAttribute("data-virtual-list-item-key");
+        if (!key || readerKeys.has(key)) continue;
+        readerKeys.add(key);
+        const loadingPlaceholder = readerBody.querySelector(".dsv-r-loading");
+        if (loadingPlaceholder) loadingPlaceholder.remove();
+        const atBottom = readerAtBottom();
+        readerBody.appendChild(makeHolder(key, el));
+        if (atBottom) readerScrollBottom();
+        if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
+      }
+    });
+    readerWatch.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // 高频同步流式输出 + 按钮状态 + 侧边栏会话
+  function startSyncTimer() {
+    clearInterval(readerSyncTimer);
+    readerSyncTimer = setInterval(() => {
+      if (!readerEl || !readerBody) return;
+
+      syncComposerPills();
+      syncStopButtonState();
+      syncSidebarSessions();
+
+      // 检查最后 2 条挂载的消息（用户刚发出的提问 + 正在流式输出的回答）
+      const els = siteVirtualItems();
+      const tail = els.slice(-2);
+      for (const item of tail) {
+        const key = item.getAttribute("data-virtual-list-item-key");
+        if (!key) continue;
+        let holder = readerBody.querySelector(`.dsv-r-item[data-key="${CSS.escape(key)}"]`);
+        if (!holder) {
+          readerKeys.add(key);
+          const loadingPlaceholder = readerBody.querySelector(".dsv-r-loading");
+          if (loadingPlaceholder) loadingPlaceholder.remove();
+          const atBottom = readerAtBottom();
+          holder = makeHolder(key, item);
+          readerBody.appendChild(holder);
+          if (atBottom) readerScrollBottom();
+          if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
+          continue;
+        }
+        const sig = `${(item.textContent || "").length}|${item.querySelectorAll(".katex, .dsv-math, pre").length}`;
+        if (holder.dataset.sig === sig) continue;
+        const atBottom = readerAtBottom();
+        updateHolderContent(holder, item, key);
+        if (atBottom) readerScrollBottom();
+      }
+
+      if (isSiteGenerating()) {
+        setReaderStatus("DeepSeek 正在回答…");
+      } else if (readerStatus && readerStatus.textContent === "DeepSeek 正在回答…") {
+        setReaderStatus("");
+      }
+    }, 180);
   }
 
   async function openReader() {
     if (readerEl) {
-      readerEl.querySelector(".dsv-r-body")?.scrollIntoView({ block: "start" });
+      if (readerSessionPath !== location.pathname) {
+        const token = ++harvestToken;
+        await harvestAndRenderSession(token);
+      }
       return;
     }
 
@@ -902,55 +1383,120 @@
     readerEl.id = "dsv-reader";
     readerEl.innerHTML = `
       <header class="dsv-r-header">
-        <span class="dsv-r-title">阅读模式</span>
-        <span class="dsv-r-meta">正在读取…</span>
-        <input class="dsv-r-search" type="search" placeholder="在当前对话里搜索…" />
-        <button class="dsv-r-btn" data-act="collapse">全部收起</button>
-        <button class="dsv-r-btn" data-act="expand">全部展开</button>
-        <button class="dsv-r-btn dsv-r-close" data-act="close">关闭</button>
+        <button class="dsv-r-btn" data-act="toggle-sidebar" title="展开/收起会话列表">☰ 会话</button>
+        <span class="dsv-r-title">DeepSeek 对话</span>
+        <span class="dsv-r-meta">准备就绪</span>
+        <input class="dsv-r-search" type="search" placeholder="搜索当前对话…" />
+        <button class="dsv-r-btn" data-act="collapse">全部收起思考</button>
+        <button class="dsv-r-btn" data-act="expand">全部展开思考</button>
+        <button class="dsv-r-btn" data-act="top" title="跳到顶部">↑ 顶部</button>
+        <button class="dsv-r-btn" data-act="bottom" title="跳到底部">↓ 底部</button>
+        <button class="dsv-r-btn dsv-r-close" data-act="close" title="暂时切回 DeepSeek 原版页面">切回原版</button>
       </header>
-      <div class="dsv-r-body">
-        <div class="dsv-r-loading">正在从页面里读取对话…<span class="dsv-r-progress"><i></i></span></div>
+      <div class="dsv-r-main">
+        <aside class="dsv-r-sidebar">
+          <div class="dsv-r-side-top">
+            <button type="button" class="dsv-r-newchat" data-act="new-chat">＋ 开启新对话</button>
+          </div>
+          <div class="dsv-r-sessions"></div>
+        </aside>
+        <div class="dsv-r-workspace">
+          <div class="dsv-r-body">
+            <div class="dsv-r-loading">正在同步当前对话…</div>
+          </div>
+          <footer class="dsv-r-footer">
+            <div class="dsv-r-footer-inner">
+              <div class="dsv-r-toolbar">
+                <button type="button" class="dsv-r-pill" data-act="toggle-deepthink">🧠 深度思考</button>
+                <button type="button" class="dsv-r-pill" data-act="toggle-search">🌐 联网搜索</button>
+                <span class="dsv-r-status"></span>
+              </div>
+              <div class="dsv-r-composer">
+                <textarea rows="1" placeholder="在这里直接向 DeepSeek 提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+                <button type="button" class="dsv-r-send">发送</button>
+              </div>
+            </div>
+          </footer>
+        </div>
       </div>
     `;
     document.body.appendChild(readerEl);
     document.body.classList.add("dsv-reader-open");
 
-    const body = readerEl.querySelector(".dsv-r-body");
-    const meta = readerEl.querySelector(".dsv-r-meta");
-    const bar = readerEl.querySelector(".dsv-r-progress i");
+    readerBody = readerEl.querySelector(".dsv-r-body");
+    readerStatus = readerEl.querySelector(".dsv-r-status");
+    readerMeta = readerEl.querySelector(".dsv-r-meta");
+    readerTitleEl = readerEl.querySelector(".dsv-r-title");
+    readerSendBtn = readerEl.querySelector(".dsv-r-send");
+    readerInput = readerEl.querySelector(".dsv-r-composer textarea");
+    readerThinkPill = readerEl.querySelector('[data-act="toggle-deepthink"]');
+    readerSearchPill = readerEl.querySelector('[data-act="toggle-search"]');
+    readerSessionsEl = readerEl.querySelector(".dsv-r-sessions");
 
-    const { items, scroller, originalTop } = await harvestConversation((n) => {
-      meta.textContent = `已读取 ${n} 条…`;
-      if (bar) bar.style.width = `${Math.min(92, 15 + n)}%`;
+    syncComposerPills();
+    syncSidebarSessions();
+    watchNewMessages();
+    startSyncTimer();
+
+    const token = ++harvestToken;
+    harvestAndRenderSession(token);
+
+    async function submit() {
+      if (isSiteGenerating()) {
+        stopSiteGeneration();
+        return;
+      }
+      const text = (readerInput.value || "").trim();
+      if (!text || readerSending) return;
+      readerSending = true;
+      readerSendBtn.disabled = true;
+      setReaderStatus("正在发送…");
+      const res = await sendToSite(text);
+      if (res.ok) {
+        readerInput.value = "";
+        readerInput.style.height = "52px";
+        setReaderStatus("已发送，等待回答…");
+        setTimeout(() => readerScrollBottom(), 100);
+      } else {
+        setReaderStatus(res.reason || "发送失败，请切回原版检查输入框状态");
+      }
+      readerSending = false;
+      syncStopButtonState();
+      readerInput.focus();
+    }
+
+    readerSendBtn.addEventListener("click", submit);
+    readerInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        submit();
+      }
     });
-    readerRestore = { scroller, originalTop };
-
-    if (!items.length) {
-      body.innerHTML = `<div class="dsv-r-loading">没有读到消息。<br />请确认当前在对话页面，再重新打开阅读模式。</div>`;
-      meta.textContent = "0 条";
-      return;
-    }
-
-    const frag = document.createDocumentFragment();
-    for (const src of items) {
-      const holder = document.createElement("div");
-      holder.className = "dsv-r-item";
-      holder.appendChild(sanitizeClone(src));
-      frag.appendChild(holder);
-    }
-    body.innerHTML = "";
-    body.appendChild(frag);
-    meta.textContent = `${items.length} 条消息`;
-
-    // 阅读模式下也把公式补渲染一遍
-    scheduleScan(60);
+    readerInput.addEventListener("input", () => {
+      readerInput.style.height = "auto";
+      readerInput.style.height = `${Math.min(180, Math.max(52, readerInput.scrollHeight))}px`;
+    });
+    setTimeout(() => readerInput && readerInput.focus(), 120);
   }
 
-  function closeReader() {
+  function closeReader({ byUser = false } = {}) {
     if (!readerEl) return;
+    if (byUser) readerUserClosed = true;
+    harvestToken++;
+    if (readerWatch) readerWatch.disconnect();
+    clearInterval(readerSyncTimer);
+    readerWatch = null;
     readerEl.remove();
     readerEl = null;
+    readerBody = null;
+    readerStatus = null;
+    readerMeta = null;
+    readerTitleEl = null;
+    readerSendBtn = null;
+    readerInput = null;
+    readerThinkPill = null;
+    readerSearchPill = null;
+    readerSessionsEl = null;
     document.body.classList.remove("dsv-reader-open");
     if (readerRestore && readerRestore.scroller) {
       try {
@@ -962,35 +1508,201 @@
     readerRestore = null;
   }
 
+  // 监听会话路径切换（例如从侧边栏切换对话，或新对话发出第一条消息后跳转到 /a/chat/s/...）
+  setInterval(() => {
+    if (location.pathname !== lastPath) {
+      const prevPath = lastPath;
+      lastPath = location.pathname;
+      userTouched = new WeakSet();
+      wasGenerating = new WeakSet();
+      scheduleThink(300);
+      scheduleScan(300);
+
+      if (readerEl) {
+        syncSidebarSessions();
+        // 从首页 "/" 发消息自动跳进新会话时，不清空当前正在流式生成的节点
+        if (prevPath === "/" && /^\/a\/chat\/s\//.test(lastPath)) {
+          readerSessionPath = lastPath;
+        } else {
+          const token = ++harvestToken;
+          harvestAndRenderSession(token);
+        }
+      } else if (settings.readerDefault && !readerUserClosed) {
+        openReader();
+      }
+    }
+  }, 350);
+
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && readerEl) closeReader();
+    if (e.key === "Escape" && readerEl) {
+      if (document.activeElement === readerInput && readerInput.value) {
+        readerInput.blur();
+        return;
+      }
+      closeReader({ byUser: true });
+    }
   }, true);
 
   document.addEventListener("click", (e) => {
     if (!readerEl || !readerEl.contains(e.target)) return;
 
+    // 1. 顶部/底部工具栏按钮
     const act = e.target.closest("[data-act]");
     if (act) {
       const action = act.dataset.act;
       if (action === "close") {
-        closeReader();
+        closeReader({ byUser: true });
+        return;
+      }
+      if (action === "toggle-sidebar") {
+        readerEl.classList.toggle("dsv-sidebar-collapsed");
+        return;
+      }
+      if (action === "new-chat") {
+        triggerNewChat();
+        if (readerBody) {
+          readerKeys.clear();
+          readerBody.innerHTML = `<div class="dsv-r-loading">新对话 · 直接在下方输入问题开始提问</div>`;
+        }
+        if (readerMeta) readerMeta.textContent = "新对话";
+        if (readerInput) readerInput.focus();
+        return;
+      }
+      if (action === "top") {
+        if (readerBody) readerBody.scrollTop = 0;
+        return;
+      }
+      if (action === "bottom") {
+        readerScrollBottom();
         return;
       }
       if (action === "collapse" || action === "expand") {
-        const want = action === "expand" ? "0" : "1";
+        const wantOpen = action === "expand";
+        for (const item of readerEl.querySelectorAll(".dsv-r-item")) {
+          const k = item.dataset.key;
+          if (k) readerThinkManual.set(k, wantOpen ? "open" : "closed");
+        }
         for (const think of readerEl.querySelectorAll(CONTAINER_SELECTOR)) {
-          if (want === "1") think.setAttribute("data-dsv-collapsed", "1");
-          else think.removeAttribute("data-dsv-collapsed");
+          if (wantOpen) think.removeAttribute("data-dsv-collapsed");
+          else think.setAttribute("data-dsv-collapsed", "1");
+        }
+        return;
+      }
+      if (action === "toggle-deepthink") {
+        const { thinkBtn } = findSiteToggleButtons();
+        if (thinkBtn) {
+          thinkBtn.click();
+          setTimeout(syncComposerPills, 60);
+        }
+        return;
+      }
+      if (action === "toggle-search") {
+        const { searchBtn } = findSiteToggleButtons();
+        if (searchBtn) {
+          searchBtn.click();
+          setTimeout(syncComposerPills, 60);
         }
         return;
       }
     }
 
-    // 点击思维链标题栏：切换我们自己的折叠属性
+    // 2. 左侧会话列表切换
+    const sessionBtn = e.target.closest(".dsv-r-session-item");
+    if (sessionBtn) {
+      const href = sessionBtn.dataset.href;
+      const realLink = Array.from(document.querySelectorAll('a[href*="/a/chat/s/"]')).find(
+        (a) => (!readerEl || !readerEl.contains(a)) && a.getAttribute("href") === href
+      );
+      if (realLink) realLink.click();
+      return;
+    }
+
+    // 3. 单条消息操作栏（复制全文 / 折叠思考 / 编辑重问 / 重新生成）
+    const itemAct = e.target.closest("[data-item-act]");
+    if (itemAct) {
+      const holder = itemAct.closest(".dsv-r-item");
+      if (!holder) return;
+      const mode = itemAct.dataset.itemAct;
+      const key = holder.dataset.key;
+
+      if (mode === "toggle-think") {
+        const think = holder.querySelector(CONTAINER_SELECTOR);
+        if (think) {
+          const willOpen = think.hasAttribute("data-dsv-collapsed");
+          if (willOpen) think.removeAttribute("data-dsv-collapsed");
+          else think.setAttribute("data-dsv-collapsed", "1");
+          if (key) readerThinkManual.set(key, willOpen ? "open" : "closed");
+        }
+        return;
+      }
+
+      if (mode === "copy") {
+        const body = holder.querySelector(".dsv-r-item-body") || holder;
+        const text = extractPlainWithLatex(body);
+        navigator.clipboard?.writeText(text);
+        const orig = itemAct.textContent;
+        itemAct.textContent = "已复制 ✓";
+        setTimeout(() => {
+          itemAct.textContent = orig;
+        }, 1200);
+        return;
+      }
+
+      if (mode === "reask") {
+        const body = holder.querySelector(".dsv-r-item-body") || holder;
+        const text = extractPlainWithLatex(body);
+        if (readerInput) {
+          readerInput.value = text;
+          readerInput.dispatchEvent(new Event("input"));
+          readerInput.focus();
+        }
+        return;
+      }
+
+      if (mode === "regen") {
+        // 优先找前一条用户提问并重新发送，或填充到输入框
+        let prev = holder.previousElementSibling;
+        while (prev && prev.dataset.role !== "user") prev = prev.previousElementSibling;
+        if (prev) {
+          const body = prev.querySelector(".dsv-r-item-body") || prev;
+          const prompt = extractPlainWithLatex(body);
+          if (prompt && readerInput) {
+            readerInput.value = prompt;
+            readerSendBtn?.click();
+          }
+        }
+        return;
+      }
+    }
+
+    // 4. 代码块一键复制
+    const codeBtn = e.target.closest(".dsv-code-copy-btn, .md-code-block-action");
+    if (codeBtn) {
+      const codeBlock = codeBtn.closest(".md-code-block");
+      const pre = codeBlock?.querySelector("pre, code");
+      if (pre) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigator.clipboard?.writeText(pre.textContent || "");
+        const targetBtn = codeBlock.querySelector(".dsv-code-copy-btn") || codeBtn;
+        const orig = targetBtn.textContent;
+        targetBtn.textContent = "已复制 ✓";
+        setTimeout(() => {
+          targetBtn.textContent = orig;
+        }, 1200);
+      }
+      return;
+    }
+
+    // 5. 点击思维链标题栏：切换折叠并记住手动状态
     const think = e.target.closest(CONTAINER_SELECTOR);
     if (think && think.firstElementChild && think.firstElementChild.contains(e.target)) {
-      if (think.hasAttribute("data-dsv-collapsed")) think.removeAttribute("data-dsv-collapsed");
+      const holder = think.closest(".dsv-r-item");
+      const key = holder?.dataset.key;
+      const willOpen = think.hasAttribute("data-dsv-collapsed");
+      if (willOpen) think.removeAttribute("data-dsv-collapsed");
       else think.setAttribute("data-dsv-collapsed", "1");
+      if (key) readerThinkManual.set(key, willOpen ? "open" : "closed");
     }
   }, true);
 
@@ -1014,6 +1726,7 @@
       return false;
     }
     if (msg?.type === "DSV_OPEN_READER") {
+      readerUserClosed = false;
       sendResponse({ ok: true });
       openReader();
       return false;
@@ -1022,6 +1735,7 @@
       const blocks = thinkBlocks();
       sendResponse({
         ok: true,
+        readerOpen: Boolean(readerEl),
         thinkCount: blocks.length,
         openCount: blocks.filter((b) => isOpenBlock(b.container)).length,
         mathCount: document.querySelectorAll(".dsv-math").length

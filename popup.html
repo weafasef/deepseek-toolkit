@@ -14,7 +14,7 @@
           <span class="status-dot" id="statusDot"></span>
           <span class="title">DeepSeek 网页增强</span>
         </div>
-        <span class="version">v1.0</span>
+        <span class="version">v1.3</span>
       </div>
       <div class="stat-bar" id="statBar">正在读取当前页面…</div>
     </header>
@@ -111,11 +111,20 @@
     </section>
 
     <section class="card">
-      <div class="section-title">📖 阅读模式</div>
-      <div class="rule-desc" style="font-size:11px;color:#6b7280;line-height:1.6">
-        把当前对话抓成一个完整长页面，没有虚拟列表，翻历史不会跳。
-      </div>
-      <button class="btn btn-primary" id="openReaderBtn" style="margin-top:8px">打开阅读模式</button>
+      <div class="section-title">📖 扩展覆盖页（长文档工作台）</div>
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">默认使用扩展页面</span>
+          <span class="rule-desc">打开 DeepSeek 自动进入长文档页面，可直接提问、切换深度思考与搜索</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="readerDefault" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+      <button class="btn btn-primary" id="openReaderBtn" style="margin-top:8px;width:100%">打开扩展页面</button>
     </section>
 
     <footer class="footer">仅在 chat.deepseek.com 的对话页生效</footer>

@@ -2,6 +2,7 @@
 
 (() => {
   const DEFAULTS = {
+    readerDefault: true,
     collapseDefault: true,
     autoCollapseOnDone: true,
     rememberState: true,
