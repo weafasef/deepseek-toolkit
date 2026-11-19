@@ -880,37 +880,66 @@
     const out = [];
     for (const el of document.querySelectorAll("[data-virtual-list-item-key]")) {
       if (readerEl && readerEl.contains(el)) continue;
+      const key = el.getAttribute("data-virtual-list-item-key");
+      if (key === "-999") continue;
       out.push(el);
     }
     return out;
   }
 
   function isAssistantItem(el) {
+    if (!el) return false;
+    if (el.classList && (el.classList.contains("_4f9bf79") || el.classList.contains("b4e4476b"))) return true;
     return Boolean(
-      el.querySelector(".ds-assistant-message-main-content") ||
+      el.querySelector(".ds-assistant-message-main-content, ._4f9bf79, .b4e4476b, ._2f297cc") ||
       el.querySelector(CONTAINER_SELECTOR)
     );
+  }
+
+  // 判断是否是刚发出消息时还没返回任何文字的“• • •”空白加载占位
+  function isEmptyLoadingPlaceholder(el) {
+    if (!el) return true;
+    const key = el.getAttribute("data-virtual-list-item-key") || "";
+    const hasMain = Boolean(el.querySelector(".ds-assistant-message-main-content"));
+    const hasThink = Boolean(el.querySelector(CONTAINER_SELECTOR));
+    const hasUserBubble = Boolean(el.querySelector(".fbb737a4"));
+    const text = (el.textContent || "").replace(/[\s•·.…]/g, "").trim();
+    if (!text && !hasMain && !hasThink && !hasUserBubble && !el.querySelector("img, pre, table")) {
+      return true;
+    }
+    // 负数 key 的助手占位块，如果既没有思考块也没有正文，属于即将被服务端 ID 替换的临时点动画
+    if (Number(key) < 0 && isAssistantItem(el) && !hasMain && !hasThink) {
+      return true;
+    }
+    return false;
   }
 
   function enhanceCodeBlocks(root) {
     for (const block of root.querySelectorAll(".md-code-block")) {
       const banner = block.querySelector(".md-code-block-banner") || block.firstElementChild;
-      if (!banner || banner.querySelector(".dsv-code-copy-btn")) continue;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "dsv-code-copy-btn";
-      btn.textContent = "复制代码";
-      banner.appendChild(btn);
+      if (!banner) continue;
+      // 移除原网页代码块里失效的图标按钮，换成我们自己的复制按钮
+      for (const oldAct of banner.querySelectorAll(".md-code-block-action, .ds-icon-button")) {
+        oldAct.remove();
+      }
+      if (!banner.querySelector(".dsv-code-copy-btn")) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "dsv-code-copy-btn";
+        btn.textContent = "复制代码";
+        banner.appendChild(btn);
+      }
     }
   }
 
-  function sanitizeClone(src, key) {
-    const el = src.cloneNode(true);
-    el.removeAttribute("data-virtual-list-item-key");
-    for (const bad of el.querySelectorAll("script, style, link, iframe, textarea")) bad.remove();
-    for (const node of el.querySelectorAll("[id]")) node.removeAttribute("id");
+  function sanitizeAssistantClone(src, key) {
+    const wrap = document.createElement("div");
+    wrap.className = "dsv-assistant-content";
 
-    for (const think of el.querySelectorAll(CONTAINER_SELECTOR)) {
+    // 白名单提取 1：思考/搜索折叠块
+    for (const origThink of src.querySelectorAll(CONTAINER_SELECTOR)) {
+      const think = origThink.cloneNode(true);
+      for (const node of think.querySelectorAll("[id]")) node.removeAttribute("id");
       const header = think.firstElementChild;
       const title = header ? blockTitle(header) : "";
       const generating = isGeneratingTitle(title);
@@ -930,11 +959,50 @@
           (!wasGen && settings.collapseDefault);
         if (shouldCollapse) think.setAttribute("data-dsv-collapsed", "1");
       }
+      wrap.appendChild(think);
     }
 
-    enhanceCodeBlocks(el);
-    scanMathIn(el, { checkViewport: false });
-    return el;
+    // 白名单提取 2：模型回答正文块 (.ds-assistant-message-main-content)
+    const mainBlocks = src.querySelectorAll(".ds-assistant-message-main-content");
+    if (mainBlocks.length) {
+      for (const origMain of mainBlocks) {
+        const main = origMain.cloneNode(true);
+        for (const dup of main.querySelectorAll(CONTAINER_SELECTOR)) dup.remove();
+        for (const bad of main.querySelectorAll("script, style, link, iframe, textarea")) bad.remove();
+        for (const node of main.querySelectorAll("[id]")) node.removeAttribute("id");
+        wrap.appendChild(main);
+      }
+    } else {
+      // 兜底：存在非思考块的 .ds-markdown 时提取之
+      for (const origMd of src.querySelectorAll(".ds-markdown")) {
+        if (origMd.closest(CONTAINER_SELECTOR)) continue;
+        const md = origMd.cloneNode(true);
+        for (const node of md.querySelectorAll("[id]")) node.removeAttribute("id");
+        wrap.appendChild(md);
+      }
+    }
+
+    enhanceCodeBlocks(wrap);
+    scanMathIn(wrap, { checkViewport: false });
+    return wrap;
+  }
+
+  function buildUserBubble(src) {
+    const bubble = document.createElement("div");
+    bubble.className = "dsv-user-bubble";
+    // 直接提取用户气泡内的纯文本（不保留原网页 .fbb737a4 的 calc(100% - 88px) 窄盒与 overflow:hidden 截断）
+    const siteBubble =
+      src.querySelector(".fbb737a4 .ds-collapsible-text") ||
+      src.querySelector(".fbb737a4") ||
+      src.querySelector(".ds-collapsible-text") ||
+      src;
+    const text = (siteBubble.textContent || "").trim();
+    const textNode = document.createElement("div");
+    textNode.className = "dsv-user-text";
+    textNode.textContent = text;
+    bubble.appendChild(textNode);
+    scanMathIn(bubble, { checkViewport: false });
+    return bubble;
   }
 
   function extractPlainWithLatex(root) {
@@ -949,6 +1017,12 @@
     return (root.innerText || root.textContent || "").trim();
   }
 
+  function itemSignature(sourceEl) {
+    const think = sourceEl.querySelector(CONTAINER_SELECTOR);
+    const thinkTitle = think && think.firstElementChild ? blockTitle(think.firstElementChild) : "";
+    return `${(sourceEl.textContent || "").length}|${thinkTitle}|${sourceEl.querySelectorAll(".katex, .dsv-math, pre").length}`;
+  }
+
   function makeHolder(key, sourceEl) {
     const assistant = isAssistantItem(sourceEl);
     const hasThink = Boolean(sourceEl.querySelector(CONTAINER_SELECTOR));
@@ -956,40 +1030,69 @@
     holder.className = `dsv-r-item ${assistant ? "dsv-role-assistant" : "dsv-role-user"}`;
     holder.dataset.key = key;
     holder.dataset.role = assistant ? "assistant" : "user";
-    holder.dataset.sig = `${(sourceEl.textContent || "").length}|${sourceEl.querySelectorAll(".katex, .dsv-math, pre").length}`;
-
-    const head = document.createElement("div");
-    head.className = "dsv-r-item-head";
-    head.innerHTML = `
-      <span class="dsv-r-badge">${assistant ? "🤖 DeepSeek" : "🧑 你"}</span>
-      <div class="dsv-r-actions">
-        ${assistant && hasThink ? '<button type="button" class="dsv-r-act-btn" data-item-act="toggle-think">折叠/展开思考</button>' : ""}
-        <button type="button" class="dsv-r-act-btn" data-item-act="copy">${assistant ? "复制全文" : "复制提问"}</button>
-        ${assistant
-          ? '<button type="button" class="dsv-r-act-btn" data-item-act="regen">重新生成</button>'
-          : '<button type="button" class="dsv-r-act-btn" data-item-act="reask">编辑重问</button>'}
-      </div>
-    `;
+    holder.dataset.sig = itemSignature(sourceEl);
 
     const contentWrap = document.createElement("div");
     contentWrap.className = "dsv-r-item-body";
-    contentWrap.appendChild(sanitizeClone(sourceEl, key));
+    if (assistant) {
+      contentWrap.appendChild(sanitizeAssistantClone(sourceEl, key));
+    } else {
+      contentWrap.appendChild(buildUserBubble(sourceEl));
+    }
 
-    holder.appendChild(head);
+    const metaRow = document.createElement("div");
+    metaRow.className = "dsv-r-meta-row";
+    metaRow.innerHTML = assistant
+      ? `
+        ${hasThink ? '<button type="button" class="dsv-r-act-btn" data-item-act="toggle-think">折叠/展开思考</button>' : ""}
+        <button type="button" class="dsv-r-act-btn" data-item-act="copy">复制全文</button>
+        <button type="button" class="dsv-r-act-btn" data-item-act="regen">重新生成</button>
+      `
+      : `
+        <button type="button" class="dsv-r-act-btn" data-item-act="copy">复制</button>
+        <button type="button" class="dsv-r-act-btn" data-item-act="reask">编辑重问</button>
+      `;
+
     holder.appendChild(contentWrap);
+    holder.appendChild(metaRow);
     return holder;
   }
 
   function updateHolderContent(holder, sourceEl, key) {
-    const assistant = isAssistantItem(sourceEl);
-    holder.className = `dsv-r-item ${assistant ? "dsv-role-assistant" : "dsv-role-user"}`;
-    holder.dataset.role = assistant ? "assistant" : "user";
-    holder.dataset.sig = `${(sourceEl.textContent || "").length}|${sourceEl.querySelectorAll(".katex, .dsv-math, pre").length}`;
-    const body = holder.querySelector(".dsv-r-item-body");
-    if (body) {
-      body.replaceChildren(sanitizeClone(sourceEl, key));
-    } else {
-      holder.replaceWith(makeHolder(key, sourceEl));
+    const nextHolder = makeHolder(key, sourceEl);
+    holder.replaceWith(nextHolder);
+  }
+
+  function cleanupReplacedTempHolders() {
+    if (!readerBody) return;
+    const mounted = siteVirtualItems();
+    if (!mounted.length) return;
+    const mountedKeys = new Set(mounted.map((el) => el.getAttribute("data-virtual-list-item-key")));
+
+    // 1. 清理原网页已删除/替换掉的负数临时 key（比如刚发送时的 -1 / -2 占位）
+    for (const holder of Array.from(readerBody.querySelectorAll(".dsv-r-item"))) {
+      const k = holder.dataset.key || "";
+      if (Number(k) < 0 && !mountedKeys.has(k)) {
+        holder.remove();
+        readerKeys.delete(k);
+      }
+    }
+
+    // 2. 如果最后两条同为 user 且文字完全相同（例如 -1 变成正数 id 时的瞬态），去掉前一条重复的
+    const allHolders = Array.from(readerBody.querySelectorAll(".dsv-r-item"));
+    if (allHolders.length >= 2) {
+      const a = allHolders[allHolders.length - 2];
+      const b = allHolders[allHolders.length - 1];
+      if (
+        a.dataset.role === "user" &&
+        b.dataset.role === "user" &&
+        Number(a.dataset.key) < 0 &&
+        (a.querySelector(".dsv-r-item-body")?.textContent || "").trim() ===
+          (b.querySelector(".dsv-r-item-body")?.textContent || "").trim()
+      ) {
+        readerKeys.delete(a.dataset.key);
+        a.remove();
+      }
     }
   }
 
@@ -1073,6 +1176,7 @@
     const items = siteVirtualItems();
     const last = items[items.length - 1];
     if (!last) return false;
+    if (isEmptyLoadingPlaceholder(last) && isAssistantItem(last)) return true;
     const think = last.querySelector(CONTAINER_SELECTOR);
     if (think && think.firstElementChild) {
       const title = blockTitle(think.firstElementChild);
@@ -1089,7 +1193,7 @@
       readerSendBtn.classList.add("stopping");
       readerSendBtn.disabled = false;
     } else {
-      readerSendBtn.textContent = "发送";
+      readerSendBtn.textContent = "↑ 发送";
       readerSendBtn.classList.remove("stopping");
       readerSendBtn.disabled = readerSending;
     }
@@ -1124,23 +1228,22 @@
     }
 
     await sleep(40);
-    const before = readerKeys.size;
     const beforePath = location.pathname;
 
+    // 只派发一次 keydown Enter（与原页面 onKeyDown 行为完全一致，避免重复触发）
     const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
     composer.dispatchEvent(new KeyboardEvent("keydown", opts));
-    composer.dispatchEvent(new KeyboardEvent("keypress", opts));
-    composer.dispatchEvent(new KeyboardEvent("keyup", opts));
 
-    await sleep(350);
-    if (readerKeys.size === before && location.pathname === beforePath && (composer.value || "").trim()) {
+    await sleep(320);
+    // 只有当原输入框里的文字还没被清空时，才兜底点一次发送按钮
+    if ((composer.value || "").trim() === text.trim() && location.pathname === beforePath) {
       const btn = findSitePrimaryActionBtn(composer);
       if (btn) btn.click();
-      await sleep(350);
+      await sleep(300);
     }
 
     const cleared = !(composer.value || "").trim();
-    return { ok: cleared || readerKeys.size > before || location.pathname !== beforePath };
+    return { ok: cleared || location.pathname !== beforePath };
   }
 
   function syncSidebarSessions() {
@@ -1206,7 +1309,7 @@
     readerSessionPath = sessionPath;
     readerKeys = new Set();
 
-    const initialEls = siteVirtualItems();
+    const initialEls = siteVirtualItems().filter((el) => !isEmptyLoadingPlaceholder(el));
     if (!initialEls.length) {
       const cached = sessionCache.get(sessionPath);
       if (cached && cached.size) {
@@ -1263,13 +1366,13 @@
 
         const span = Math.max(420, scroller.clientHeight * 1.25);
         scroller.scrollTop = Math.max(0, scroller.scrollTop - span);
-        // 立即派发 scroll 事件，触发虚拟列表 flushSync 同步挂载
         scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
         await nextFrameAndDelay(32);
         if (token !== harvestToken || !readerEl) return;
 
         const batch = [];
         for (const el of siteVirtualItems()) {
+          if (isEmptyLoadingPlaceholder(el)) continue;
           const key = el.getAttribute("data-virtual-list-item-key");
           if (!key || readerKeys.has(key)) continue;
           const clone = el.cloneNode(true);
@@ -1284,14 +1387,12 @@
           const frag = document.createDocumentFragment();
           for (const h of batch) frag.appendChild(h);
           readerBody.insertBefore(frag, readerBody.firstChild);
-          // 补偿顶部插入带来的高度增量，保证用户当前视野纹丝不动
           const delta = readerBody.scrollHeight - prevHeight;
           readerBody.scrollTop = prevTop + delta;
           if (readerMeta) readerMeta.textContent = `已同步 ${readerKeys.size} 条…`;
         }
       }
 
-      // 恢复到底部，保证后续新消息在原页面底部正常流式挂载
       scroller.scrollTop = scroller.scrollHeight;
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     }
@@ -1299,7 +1400,6 @@
     if (token !== harvestToken || !readerEl) return;
     if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
 
-    // 写入会话缓存
     const orderedCache = new Map();
     for (const itemEl of readerBody.querySelectorAll(".dsv-r-item")) {
       const k = itemEl.dataset.key;
@@ -1308,26 +1408,45 @@
     if (orderedCache.size) sessionCache.set(sessionPath, orderedCache);
   }
 
-  function watchNewMessages() {
-    if (readerWatch) readerWatch.disconnect();
-    readerWatch = new MutationObserver(() => {
-      if (!readerEl || !readerBody) return;
-      for (const el of siteVirtualItems()) {
-        const key = el.getAttribute("data-virtual-list-item-key");
-        if (!key || readerKeys.has(key)) continue;
+  function syncLatestItemsToReader() {
+    if (!readerEl || !readerBody) return;
+    cleanupReplacedTempHolders();
+
+    const els = siteVirtualItems();
+    const tail = els.slice(-3);
+    for (const item of tail) {
+      if (isEmptyLoadingPlaceholder(item)) continue;
+      const key = item.getAttribute("data-virtual-list-item-key");
+      if (!key) continue;
+      let holder = readerBody.querySelector(`.dsv-r-item[data-key="${CSS.escape(key)}"]`);
+      if (!holder) {
         readerKeys.add(key);
         const loadingPlaceholder = readerBody.querySelector(".dsv-r-loading");
         if (loadingPlaceholder) loadingPlaceholder.remove();
         const atBottom = readerAtBottom();
-        readerBody.appendChild(makeHolder(key, el));
+        holder = makeHolder(key, item);
+        readerBody.appendChild(holder);
+        cleanupReplacedTempHolders();
         if (atBottom) readerScrollBottom();
-        if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
+        if (readerMeta) readerMeta.textContent = `${readerBody.querySelectorAll(".dsv-r-item").length} 条消息`;
+        continue;
       }
+      const sig = itemSignature(item);
+      if (holder.dataset.sig === sig) continue;
+      const atBottom = readerAtBottom();
+      updateHolderContent(holder, item, key);
+      if (atBottom) readerScrollBottom();
+    }
+  }
+
+  function watchNewMessages() {
+    if (readerWatch) readerWatch.disconnect();
+    readerWatch = new MutationObserver(() => {
+      syncLatestItemsToReader();
     });
     readerWatch.observe(document.body, { childList: true, subtree: true });
   }
 
-  // 高频同步流式输出 + 按钮状态 + 侧边栏会话
   function startSyncTimer() {
     clearInterval(readerSyncTimer);
     readerSyncTimer = setInterval(() => {
@@ -1336,38 +1455,14 @@
       syncComposerPills();
       syncStopButtonState();
       syncSidebarSessions();
-
-      // 检查最后 2 条挂载的消息（用户刚发出的提问 + 正在流式输出的回答）
-      const els = siteVirtualItems();
-      const tail = els.slice(-2);
-      for (const item of tail) {
-        const key = item.getAttribute("data-virtual-list-item-key");
-        if (!key) continue;
-        let holder = readerBody.querySelector(`.dsv-r-item[data-key="${CSS.escape(key)}"]`);
-        if (!holder) {
-          readerKeys.add(key);
-          const loadingPlaceholder = readerBody.querySelector(".dsv-r-loading");
-          if (loadingPlaceholder) loadingPlaceholder.remove();
-          const atBottom = readerAtBottom();
-          holder = makeHolder(key, item);
-          readerBody.appendChild(holder);
-          if (atBottom) readerScrollBottom();
-          if (readerMeta) readerMeta.textContent = `${readerKeys.size} 条消息`;
-          continue;
-        }
-        const sig = `${(item.textContent || "").length}|${item.querySelectorAll(".katex, .dsv-math, pre").length}`;
-        if (holder.dataset.sig === sig) continue;
-        const atBottom = readerAtBottom();
-        updateHolderContent(holder, item, key);
-        if (atBottom) readerScrollBottom();
-      }
+      syncLatestItemsToReader();
 
       if (isSiteGenerating()) {
         setReaderStatus("DeepSeek 正在回答…");
       } else if (readerStatus && readerStatus.textContent === "DeepSeek 正在回答…") {
         setReaderStatus("");
       }
-    }, 180);
+    }, 160);
   }
 
   async function openReader() {
@@ -1387,10 +1482,10 @@
         <span class="dsv-r-title">DeepSeek 对话</span>
         <span class="dsv-r-meta">准备就绪</span>
         <input class="dsv-r-search" type="search" placeholder="搜索当前对话…" />
-        <button class="dsv-r-btn" data-act="collapse">全部收起思考</button>
-        <button class="dsv-r-btn" data-act="expand">全部展开思考</button>
-        <button class="dsv-r-btn" data-act="top" title="跳到顶部">↑ 顶部</button>
-        <button class="dsv-r-btn" data-act="bottom" title="跳到底部">↓ 底部</button>
+        <button class="dsv-r-btn" data-act="collapse">收起思考</button>
+        <button class="dsv-r-btn" data-act="expand">展开思考</button>
+        <button class="dsv-r-btn" data-act="top" title="跳到顶部">↑</button>
+        <button class="dsv-r-btn" data-act="bottom" title="跳到底部">↓</button>
         <button class="dsv-r-btn dsv-r-close" data-act="close" title="暂时切回 DeepSeek 原版页面">切回原版</button>
       </header>
       <div class="dsv-r-main">
@@ -1405,15 +1500,13 @@
             <div class="dsv-r-loading">正在同步当前对话…</div>
           </div>
           <footer class="dsv-r-footer">
-            <div class="dsv-r-footer-inner">
+            <div class="dsv-r-composer-card">
+              <textarea rows="1" placeholder="给 DeepSeek 发送消息…（Enter 发送，Shift+Enter 换行）"></textarea>
               <div class="dsv-r-toolbar">
                 <button type="button" class="dsv-r-pill" data-act="toggle-deepthink">🧠 深度思考</button>
                 <button type="button" class="dsv-r-pill" data-act="toggle-search">🌐 联网搜索</button>
                 <span class="dsv-r-status"></span>
-              </div>
-              <div class="dsv-r-composer">
-                <textarea rows="1" placeholder="在这里直接向 DeepSeek 提问…（Enter 发送，Shift+Enter 换行）"></textarea>
-                <button type="button" class="dsv-r-send">发送</button>
+                <button type="button" class="dsv-r-send">↑ 发送</button>
               </div>
             </div>
           </footer>
@@ -1428,7 +1521,7 @@
     readerMeta = readerEl.querySelector(".dsv-r-meta");
     readerTitleEl = readerEl.querySelector(".dsv-r-title");
     readerSendBtn = readerEl.querySelector(".dsv-r-send");
-    readerInput = readerEl.querySelector(".dsv-r-composer textarea");
+    readerInput = readerEl.querySelector(".dsv-r-composer-card textarea");
     readerThinkPill = readerEl.querySelector('[data-act="toggle-deepthink"]');
     readerSearchPill = readerEl.querySelector('[data-act="toggle-search"]');
     readerSessionsEl = readerEl.querySelector(".dsv-r-sessions");
@@ -1454,7 +1547,7 @@
       const res = await sendToSite(text);
       if (res.ok) {
         readerInput.value = "";
-        readerInput.style.height = "52px";
+        readerInput.style.height = "44px";
         setReaderStatus("已发送，等待回答…");
         setTimeout(() => readerScrollBottom(), 100);
       } else {
@@ -1474,7 +1567,7 @@
     });
     readerInput.addEventListener("input", () => {
       readerInput.style.height = "auto";
-      readerInput.style.height = `${Math.min(180, Math.max(52, readerInput.scrollHeight))}px`;
+      readerInput.style.height = `${Math.min(180, Math.max(44, readerInput.scrollHeight))}px`;
     });
     setTimeout(() => readerInput && readerInput.focus(), 120);
   }
