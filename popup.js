@@ -1,8 +1,11 @@
-// popup.js —— DeepSeek 网页增强面板
+// popup.js —— DeepSeek 网页增强面板 (v1.4)
 
 (() => {
   const DEFAULTS = {
-    readerDefault: true,
+    staticRender: true,
+    scrollGuard: true,
+    pageWidth: "wide",
+    showTopBar: true,
     collapseDefault: true,
     autoCollapseOnDone: true,
     rememberState: true,
@@ -19,7 +22,6 @@
   const inputs = Array.from(document.querySelectorAll("input[data-key]"));
   const collapseAllBtn = document.getElementById("collapseAllBtn");
   const expandAllBtn = document.getElementById("expandAllBtn");
-  const openReaderBtn = document.getElementById("openReaderBtn");
 
   function isDeepSeekTab(tab) {
     try {
@@ -34,7 +36,6 @@
     for (const input of inputs) {
       input.checked = Boolean(settings[input.dataset.key]);
     }
-    // 关了“复制源码”就不用再显示定界符开关的语义
     const copyOn = Boolean(settings.latexCopy);
     const delimInput = document.querySelector('input[data-key="copyWithDelimiters"]');
     if (delimInput) {
@@ -70,10 +71,11 @@
     expandAllBtn.disabled = false;
     const res = await sendToTab({ type: "DSV_STATUS" });
     if (!res?.ok) {
-      statBar.textContent = "已注入，刷新一下页面后即可统计";
+      statBar.textContent = "已就绪，刷新一下 DeepSeek 页面即可生效";
       return;
     }
-    statBar.textContent = `本页识别到 ${res.thinkCount} 个思维链块（展开 ${res.openCount} 个）· 插件渲染了 ${res.mathCount} 个公式`;
+    const modeStr = res.staticActive ? `全量渲染 ${res.msgCount || 0} 条消息` : "原生列表";
+    statBar.textContent = `${modeStr} · 思维链 ${res.thinkCount} 个（展开 ${res.openCount}）· 兼容公式 ${res.mathCount} 个`;
   }
 
   for (const input of inputs) {
@@ -88,19 +90,6 @@
     const res = await sendToTab({ type: "DSV_SET_ALL", open: false });
     if (res?.ok) statBar.textContent = `已折叠 ${res.count} 个思维链块`;
     else statBar.textContent = "操作失败，请刷新 DeepSeek 页面后重试";
-  });
-
-  openReaderBtn.addEventListener("click", async () => {
-    if (!isDeepSeekTab(activeTab)) {
-      statBar.textContent = "请先打开 chat.deepseek.com 的对话页";
-      return;
-    }
-    const res = await sendToTab({ type: "DSV_OPEN_READER" });
-    if (res?.ok) {
-      window.close();
-    } else {
-      statBar.textContent = "打开失败，请刷新 DeepSeek 页面后重试";
-    }
   });
 
   expandAllBtn.addEventListener("click", async () => {

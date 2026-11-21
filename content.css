@@ -1,5 +1,28 @@
-/* DeepSeek 网页增强 —— 公式容器与全屏长文档工作台样式 */
+/* DeepSeek 网页增强 —— 纯原生页面底层增强样式（无覆盖层） */
 
+/* 1. 动态宽屏排版：直接接管 DeepSeek 原生 CSS 变量 --message-list-max-width */
+:root,
+body,
+.ds-virtual-list,
+.ds-virtual-list-items {
+  --message-list-max-width: min(var(--dsv-message-max-width, 980px), calc(100vw - 340px)) !important;
+}
+
+@media (max-width: 960px) {
+  :root,
+  body,
+  .ds-virtual-list,
+  .ds-virtual-list-items {
+    --message-list-max-width: calc(100vw - 48px) !important;
+  }
+}
+
+/* 2. 全量静态渲染模式下，确保容器永远不留虚拟滚动残余位移 */
+html[data-dsv-static] .ds-virtual-list-visible-items {
+  transform: translateY(0px) !important;
+}
+
+/* 3. 公式渲染容器与防截断横向滚动 */
 .dsv-math {
   font-size: 1.02em;
 }
@@ -23,552 +46,120 @@
   margin: 0;
 }
 
-.dsv-math-display:first-child {
-  margin-top: 0;
+/* 原生 KaTeX 块级公式超长时允许平滑横向滚动，不撑破消息列表 */
+.ds-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
 }
 
-.dsv-math-display:last-child {
-  margin-bottom: 0;
-}
-
-.dsv-math.katex-copy-hint {
-  outline: 2px solid rgba(77, 107, 254, 0.55);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-/* 用属性直接折叠：高度在本次布局就确定 */
-[data-dsv-collapsed="1"] .ds-think-content {
+/* 4. 思维链折叠与无损隐藏节点 */
+[data-dsv-collapsed="1"] .ds-think-content,
+[data-dsv-hidden="1"] {
   display: none !important;
 }
 
-/* ---------------- 右下角浮动入口（在原版页面时快速切回扩展页） ---------------- */
-
-#dsv-fab {
-  position: fixed;
-  right: 22px;
-  bottom: 24px;
-  z-index: 2147482900;
-  height: 36px;
-  padding: 0 15px;
-  border: 1px solid rgba(77, 107, 254, 0.25);
-  border-radius: 999px;
-  background: #4d6bfe;
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 6px 18px rgba(77, 107, 254, 0.28);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: transform 0.15s ease, background 0.15s ease;
-}
-
-#dsv-fab:hover {
-  background: #3b59ef;
-  transform: translateY(-1px);
-}
-
-body.dsv-reader-open #dsv-fab {
+/* 隐藏因 uBlock Origin 拦截遥测接口而弹出的左下角“请检查浏览器插件”横幅 */
+.cookie_banner-wrap {
   display: none !important;
 }
 
-/* ---------------- 扩展全功能覆盖页 ---------------- */
-
-#dsv-reader {
+/* 5. 右上角极简原生融合控制胶囊（位于顶栏分享按钮左侧，不遮挡任何按钮与正文） */
+#dsv-top-pill {
   position: fixed;
-  inset: 0;
-  z-index: 2147483000;
-  background: #ffffff;
-  color: #1f2329;
-  display: flex;
-  flex-direction: column;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* 顶部毛玻璃导航栏 */
-#dsv-reader .dsv-r-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 50px;
-  padding: 0 18px;
-  border-bottom: 1px solid #eef0f4;
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(12px);
-  flex-shrink: 0;
-}
-
-#dsv-reader .dsv-r-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #111827;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-left: 2px;
-}
-
-#dsv-reader .dsv-r-meta {
-  font-size: 11.5px;
-  color: #6b7280;
-  background: #f3f4f6;
-  padding: 2px 9px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-#dsv-reader .dsv-r-search {
-  margin-left: auto;
-  width: 190px;
-  height: 30px;
-  padding: 0 11px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 12px;
-  background: #f8f9fb;
-  color: #111827;
-  outline: none;
-  transition: all 0.15s;
-}
-
-#dsv-reader .dsv-r-search:focus {
-  width: 230px;
-  background: #fff;
-  border-color: #4d6bfe;
-  box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.1);
-}
-
-#dsv-reader .dsv-r-btn {
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-  color: #4b5563;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
+  top: 13px;
+  right: 64px;
+  z-index: 9999;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  transition: all 0.12s;
-}
-
-#dsv-reader .dsv-r-btn:hover {
-  border-color: #d1d5db;
-  background: #f9fafb;
-  color: #111827;
-}
-
-#dsv-reader .dsv-r-close {
-  background: #f3f4f6;
-  border-color: transparent;
-  color: #374151;
-}
-
-#dsv-reader .dsv-r-close:hover {
-  background: #e5e7eb;
-  color: #111827;
-}
-
-/* 主体布局：左侧会话栏 + 右侧对话区 */
-
-#dsv-reader .dsv-r-main {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  overflow: hidden;
-}
-
-#dsv-reader .dsv-r-sidebar {
-  width: 236px;
-  flex-shrink: 0;
-  border-right: 1px solid #eef0f4;
-  background: #f9fafb;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-#dsv-reader.dsv-sidebar-collapsed .dsv-r-sidebar {
-  display: none;
-}
-
-#dsv-reader .dsv-r-side-top {
-  padding: 12px 12px 8px;
-}
-
-#dsv-reader .dsv-r-newchat {
-  width: 100%;
-  height: 36px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #1f2329;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-  transition: all 0.15s;
-}
-
-#dsv-reader .dsv-r-newchat:hover {
-  border-color: #4d6bfe;
-  color: #4d6bfe;
-  background: #f8faff;
-}
-
-#dsv-reader .dsv-r-sessions {
-  flex: 1;
-  overflow-y: auto;
-  padding: 6px 10px 14px;
-}
-
-#dsv-reader .dsv-r-session-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 8px 11px;
-  margin-bottom: 2px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #4b5563;
-  font-size: 12.5px;
-  line-height: 1.4;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: background 0.12s, color 0.12s;
-}
-
-#dsv-reader .dsv-r-session-item:hover {
-  background: #eef1f6;
-  color: #111827;
-}
-
-#dsv-reader .dsv-r-session-item.active {
-  background: #e8edff;
-  color: #3b59ef;
-  font-weight: 600;
-}
-
-#dsv-reader .dsv-r-session-empty {
-  padding: 24px 10px;
-  font-size: 12px;
-  color: #9ca3af;
-  text-align: center;
-}
-
-#dsv-reader .dsv-r-workspace {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: #ffffff;
-}
-
-#dsv-reader .dsv-r-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 28px 24px 32px;
-}
-
-/* ---------------- 消息排版（极简原生风格，去除双层套壳） ---------------- */
-
-#dsv-reader .dsv-r-item {
-  max-width: 780px;
-  margin: 0 auto 24px;
-}
-
-#dsv-reader .dsv-r-item[hidden] {
-  display: none !important;
-}
-
-/* 用户消息：右对齐精致圆角气泡 */
-#dsv-reader .dsv-r-item.dsv-role-user {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  margin-bottom: 20px;
-}
-
-#dsv-reader .dsv-r-item.dsv-role-user > .dsv-r-item-body {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-}
-
-#dsv-reader .dsv-user-bubble {
-  max-width: min(82%, 600px);
-  padding: 10px 16px;
-  border-radius: 18px 18px 4px 18px;
-  background: #f0f4ff;
-  color: #1f2329;
-  font-size: 14.5px;
-  line-height: 1.6;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-#dsv-reader .dsv-user-bubble p {
-  margin: 0;
-}
-
-#dsv-reader .dsv-user-bubble p + p {
-  margin-top: 8px;
-}
-
-/* DeepSeek 回答：自然文档流 */
-#dsv-reader .dsv-r-item.dsv-role-assistant {
-  padding-bottom: 18px;
-  border-bottom: 1px solid #f2f4f7;
-}
-
-#dsv-reader .dsv-r-item.dsv-role-assistant:last-child {
-  border-bottom: none;
-}
-
-/* 顶部/底部轻量操作栏 */
-#dsv-reader .dsv-r-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  opacity: 0.45;
-  transition: opacity 0.15s;
-}
-
-#dsv-reader .dsv-r-item:hover .dsv-r-meta-row {
-  opacity: 1;
-}
-
-#dsv-reader .dsv-role-assistant .dsv-r-meta-row {
-  margin-top: 10px;
-}
-
-#dsv-reader .dsv-r-act-btn {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: #6b7280;
-  font-size: 11.5px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  transition: all 0.12s;
-}
-
-#dsv-reader .dsv-r-act-btn:hover {
-  background: #f3f4f6;
-  color: #1f2329;
-}
-
-/* 覆盖页内隐藏原网页代码块自带的失效图标按钮，统一用我们的复制按钮 */
-#dsv-reader .md-code-block-action .ds-icon-button {
-  display: none !important;
-}
-
-/* 思维链外观美化 */
-#dsv-reader div[style*="--collapsible-area-title-height"] {
-  margin-bottom: 12px;
-}
-
-#dsv-reader div[style*="--collapsible-area-title-height"] > :first-child {
-  display: inline-flex !important;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px !important;
-  border-radius: 999px;
-  background: #f5f6f8;
-  color: #4b5563;
-  font-size: 12.5px;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.15s;
-}
-
-#dsv-reader div[style*="--collapsible-area-title-height"] > :first-child:hover {
-  background: #ebedf2;
-  color: #111827;
-}
-
-#dsv-reader [data-dsv-collapsed="1"] .ds-think-content {
-  display: none !important;
-}
-
-#dsv-reader .ds-think-content {
-  margin-top: 8px;
-  padding-left: 13px;
-  border-left: 2px solid #e5e7eb;
-  color: #6b7280;
-  font-size: 13.5px;
-}
-
-/* 代码块复制按钮 */
-#dsv-reader .dsv-code-copy-btn {
-  margin-left: auto;
-  padding: 2px 9px;
-  border: 1px solid rgba(156, 163, 175, 0.35);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-#dsv-reader .dsv-code-copy-btn:hover {
-  border-color: #4d6bfe;
-  color: #4d6bfe;
-}
-
-#dsv-reader .dsv-r-loading {
-  max-width: 780px;
-  margin: 80px auto;
-  text-align: center;
-  color: #9ca3af;
-  font-size: 14px;
-  line-height: 2;
-}
-
-body.dsv-reader-open {
-  overflow: hidden !important;
-}
-
-/* ---------------- 底部一体化圆角输入舱（对齐 DeepSeek 原版质感） ---------------- */
-
-#dsv-reader .dsv-r-footer {
-  padding: 6px 24px 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, #ffffff 28%);
-  flex-shrink: 0;
-}
-
-#dsv-reader .dsv-r-composer-card {
-  max-width: 780px;
-  margin: 0 auto;
-  padding: 12px 14px 10px;
-  border-radius: 20px;
-  background: #f8f9fb;
-  border: 1px solid #e2e6ee;
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
-  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
-}
-
-#dsv-reader .dsv-r-composer-card:focus-within {
-  background: #ffffff;
-  border-color: #4d6bfe;
-  box-shadow: 0 6px 24px rgba(77, 107, 254, 0.12);
-}
-
-#dsv-reader .dsv-r-composer-card textarea {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  height: 44px;
-  min-height: 28px;
-  max-height: 180px;
-  resize: none;
-  padding: 2px 4px 8px;
-  border: none;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1.55;
-  font-family: inherit;
-  color: #111827;
-  outline: none;
-}
-
-#dsv-reader .dsv-r-composer-card textarea::placeholder {
-  color: #9ca3af;
-}
-
-#dsv-reader .dsv-r-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 4px;
-}
-
-#dsv-reader .dsv-r-pill {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid #e2e6ee;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #4b5563;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: all 0.15s;
-}
-
-#dsv-reader .dsv-r-pill:hover {
-  border-color: #cbd5e1;
-  color: #111827;
-}
-
-#dsv-reader .dsv-r-pill.active {
-  background: #eef2ff;
-  border-color: #4d6bfe;
-  color: #4d6bfe;
-  font-weight: 600;
-}
-
-#dsv-reader .dsv-r-status {
-  margin-left: auto;
-  margin-right: 6px;
-  font-size: 12px;
-  color: #6b7280;
-}
-
-#dsv-reader .dsv-r-send {
   height: 32px;
-  padding: 0 16px;
-  border: none;
+  padding: 0 8px 0 10px;
   border-radius: 999px;
-  background: #4d6bfe;
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  color: #475569;
+  user-select: none;
+}
+
+html.dark #dsv-top-pill,
+body.dark #dsv-top-pill,
+[data-theme="dark"] #dsv-top-pill {
+  background: rgba(30, 32, 38, 0.88);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+}
+
+#dsv-top-pill .dsv-pill-badge {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  transition: background 0.15s, transform 0.1s;
+  gap: 6px;
+  font-weight: 600;
+  color: #64748b;
+  padding-right: 2px;
 }
 
-#dsv-reader .dsv-r-send:hover {
-  background: #3b59ef;
+#dsv-top-pill .dsv-pill-badge.is-on {
+  color: #334155;
 }
 
-#dsv-reader .dsv-r-send.stopping {
-  background: #ef4444;
+html.dark #dsv-top-pill .dsv-pill-badge.is-on,
+body.dark #dsv-top-pill .dsv-pill-badge.is-on {
+  color: #e2e8f0;
 }
 
-#dsv-reader .dsv-r-send.stopping:hover {
-  background: #dc2626;
+#dsv-top-pill .dsv-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  transition: background 0.2s, box-shadow 0.2s;
 }
 
-#dsv-reader .dsv-r-send:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+#dsv-top-pill .dsv-pill-badge.is-on .dsv-pill-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
+}
+
+#dsv-top-pill .dsv-pill-sep {
+  width: 1px;
+  height: 13px;
+  background: #e2e8f0;
+  margin: 0 2px;
+}
+
+#dsv-top-pill .dsv-pill-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+#dsv-top-pill .dsv-pill-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+html.dark #dsv-top-pill .dsv-pill-btn,
+body.dark #dsv-top-pill .dsv-pill-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+
+html.dark #dsv-top-pill .dsv-pill-btn:hover,
+body.dark #dsv-top-pill .dsv-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
 }

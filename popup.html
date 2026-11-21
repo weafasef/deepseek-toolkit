@@ -14,10 +14,53 @@
           <span class="status-dot" id="statusDot"></span>
           <span class="title">DeepSeek 网页增强</span>
         </div>
-        <span class="version">v1.3</span>
+        <span class="version">v1.4</span>
       </div>
       <div class="stat-bar" id="statBar">正在读取当前页面…</div>
     </header>
+
+    <section class="card">
+      <div class="section-title">⚡ 原生渲染与滚动修复</div>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">关闭虚拟列表卸载（全量静态渲染）</span>
+          <span class="rule-desc">所有消息常驻 DOM，彻底解决滚动跳动、掉帧闪烁与 Ctrl+F 搜不到上文</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="staticRender" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">流式生成防强制抢滚</span>
+          <span class="rule-desc">回答生成中向上滚轮阅读上文时，禁止页面自动把你拽回底部</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="scrollGuard" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+
+      <label class="rule-row">
+        <div class="rule-info">
+          <span class="rule-name">右上角快捷控制胶囊</span>
+          <span class="rule-desc">在页面顶栏右侧显示宽度切换与一键折叠思考按钮</span>
+        </div>
+        <div class="rule-right">
+          <label class="switch">
+            <input type="checkbox" data-key="showTopBar" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </label>
+    </section>
 
     <section class="card">
       <div class="section-title">🧠 思维链</div>
@@ -110,24 +153,7 @@
       </label>
     </section>
 
-    <section class="card">
-      <div class="section-title">📖 扩展覆盖页（长文档工作台）</div>
-      <label class="rule-row">
-        <div class="rule-info">
-          <span class="rule-name">默认使用扩展页面</span>
-          <span class="rule-desc">打开 DeepSeek 自动进入长文档页面，可直接提问、切换深度思考与搜索</span>
-        </div>
-        <div class="rule-right">
-          <label class="switch">
-            <input type="checkbox" data-key="readerDefault" />
-            <span class="slider"></span>
-          </label>
-        </div>
-      </label>
-      <button class="btn btn-primary" id="openReaderBtn" style="margin-top:8px;width:100%">打开扩展页面</button>
-    </section>
-
-    <footer class="footer">仅在 chat.deepseek.com 的对话页生效</footer>
+    <footer class="footer">100% 原生页面原地增强 · 保留上传图片/分支切换全部功能</footer>
   </div>
 
   <script src="popup.js"></script>
